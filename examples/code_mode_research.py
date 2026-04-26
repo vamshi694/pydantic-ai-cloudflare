@@ -17,7 +17,7 @@ Run:
 from pydantic import BaseModel
 from pydantic_ai import Agent
 
-from pydantic_ai_cloudflare import BrowserRunToolset
+from pydantic_ai_cloudflare import BrowserRunToolset, CloudflareProvider
 
 try:
     from pydantic_ai_harness import CodeMode
@@ -38,7 +38,8 @@ class ResearchReport(BaseModel):
 
 if HAS_CODE_MODE:
     agent = Agent(
-        "cloudflare:@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+        "openai:@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+        provider=CloudflareProvider(),
         output_type=ResearchReport,
         capabilities=[CodeMode()],
         toolsets=[BrowserRunToolset(tools=["browse", "extract", "discover_links"])],
@@ -57,10 +58,10 @@ if HAS_CODE_MODE:
 
     report = result.output
     print(f"Topic: {report.topic}")
-    print(f"\nSources:")
+    print("\nSources:")
     for src in report.sources:
         print(f"  - {src}")
-    print(f"\nFindings:")
+    print("\nFindings:")
     for finding in report.findings:
         print(f"  - {finding}")
     print(f"\nConclusion: {report.conclusion}")

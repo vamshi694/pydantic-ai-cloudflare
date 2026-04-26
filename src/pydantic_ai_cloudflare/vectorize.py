@@ -9,7 +9,7 @@ Usage::
     from pydantic_ai_cloudflare import VectorizeToolset
 
     agent = Agent(
-        "cloudflare:@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+        "openai:@cf/meta/llama-3.3-70b-instruct-fp8-fast",
         toolsets=[VectorizeToolset(index_name="my-docs")],
     )
     result = agent.run_sync("What do our docs say about caching?")

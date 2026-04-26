@@ -15,7 +15,7 @@ Run:
 from pydantic import BaseModel
 from pydantic_ai import Agent
 
-from pydantic_ai_cloudflare import BrowserRunToolset
+from pydantic_ai_cloudflare import BrowserRunToolset, CloudflareProvider
 
 
 class PricingPlan(BaseModel):
@@ -33,7 +33,8 @@ class PricingAnalysis(BaseModel):
 
 
 agent = Agent(
-    "cloudflare:@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    "openai:@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    provider=CloudflareProvider(),
     output_type=PricingAnalysis,
     toolsets=[BrowserRunToolset(tools=["browse", "extract"])],
     system_prompt=(
@@ -49,7 +50,7 @@ analysis = result.output
 print(f"Company: {analysis.company}")
 print(f"Free tier: {'Yes' if analysis.has_free_tier else 'No'}")
 print(f"Cheapest paid: {analysis.cheapest_paid_plan}")
-print(f"\nPlans:")
+print("\nPlans:")
 for plan in analysis.plans:
     print(f"  {plan.name}: {plan.price}")
     for feature in plan.features[:3]:

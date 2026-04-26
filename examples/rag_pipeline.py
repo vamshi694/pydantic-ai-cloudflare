@@ -20,7 +20,7 @@ import asyncio
 from pydantic import BaseModel
 from pydantic_ai import Agent
 
-from pydantic_ai_cloudflare import BrowserRunToolset, VectorizeToolset
+from pydantic_ai_cloudflare import BrowserRunToolset, CloudflareProvider, VectorizeToolset
 
 
 class Answer(BaseModel):
@@ -48,7 +48,8 @@ async def main() -> None:
     # Step 2: Query with RAG
     print("\nStep 2: Querying with RAG agent...")
     agent = Agent(
-        "cloudflare:@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+        "openai:@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+        provider=CloudflareProvider(),
         output_type=Answer,
         toolsets=[vectorize],
         system_prompt=(

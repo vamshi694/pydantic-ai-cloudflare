@@ -1,269 +1,272 @@
 # pydantic-ai-cloudflare
 
-PydanticAI integration for Cloudflare's AI stack.
+PydanticAI integration for Cloudflare's AI stack — Workers AI, Browser Run, Vectorize, D1, and AI Gateway.
 
-Build AI agents with **type-safe structured output**, **web browsing**, **RAG**, **conversation persistence**, and **zero-config observability** — entirely on Cloudflare's infrastructure.
+## Why This Exists
+
+If you're building AI agents in Python, you probably use PydanticAI (or are considering it). If you use Cloudflare, you have access to free LLM inference, serverless web browsing, vector search, SQL storage, and request logging — but there's no PydanticAI integration for any of it.
+
+This package connects them. One `pip install`, and you get:
+
+- **Free LLM inference** via Workers AI (Llama 3.3, Qwen 3, Gemma 4, etc.) — no OpenAI key needed
+- **Web browsing** via Browser Run — headless Chrome on the edge, no local browser setup
+- **RAG** via Vectorize + Workers AI embeddings — semantic search without Pinecone
+- **Conversation persistence** via D1 — serverless SQLite, 5 GB free
+- **Zero-config observability** via AI Gateway — every LLM call logged automatically
+
+Everything works on Cloudflare's free tier.
+
+## Install
 
 ```bash
 pip install pydantic-ai-cloudflare
 ```
 
-## What This Gives You
+## Quick Start
+
+```python
+from pydantic import BaseModel
+from pydantic_ai import Agent
+from pydantic_ai_cloudflare import CloudflareProvider
+
+class CityInfo(BaseModel):
+    name: str
+    country: str
+    population: int
+    known_for: list[str]
+
+agent = Agent(
+    "openai:@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    provider=CloudflareProvider(),
+    output_type=CityInfo,
+)
+
+result = agent.run_sync("Tell me about Tokyo")
+city = result.output  # CityInfo, not a string
+
+print(city.name)        # "Tokyo"
+print(city.population)  # 13960000
+print(city.known_for)   # ["Shibuya Crossing", "Tsukiji Market", ...]
+```
+
+Set `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` as environment variables. That's all the config you need.
+
+## What's Included
 
 | Component | What it does | Cloudflare Service |
 |-----------|-------------|-------------------|
-| **CloudflareProvider** | LLM inference (tool calling, streaming, structured output) | [Workers AI](https://developers.cloudflare.com/workers-ai/) |
-| **BrowserRunToolset** | Browse, scrape, extract, crawl the web | [Browser Run](https://developers.cloudflare.com/browser-run/) |
-| **CloudflareEmbeddingModel** | Text embeddings for RAG | [Workers AI Embeddings](https://developers.cloudflare.com/workers-ai/models/#text-embeddings) |
-| **VectorizeToolset** | Semantic search + knowledge storage | [Vectorize](https://developers.cloudflare.com/vectorize/) |
-| **D1MessageHistory** | Conversation persistence across sessions | [D1](https://developers.cloudflare.com/d1/) |
-| **GatewayObservability** | Logs, cost tracking, analytics, feedback | [AI Gateway](https://developers.cloudflare.com/ai-gateway/) |
-
-All components work on the **free tier**. No credit card required to start.
+| [`CloudflareProvider`](#workers-ai-provider) | LLM inference with tool calling, streaming, structured output | [Workers AI](https://developers.cloudflare.com/workers-ai/) |
+| [`BrowserRunToolset`](#web-browsing-with-browser-run) | Browse, scrape, extract, crawl the web | [Browser Run](https://developers.cloudflare.com/browser-run/) |
+| [`CloudflareEmbeddingModel`](#embeddings) | Text embeddings for RAG | [Workers AI](https://developers.cloudflare.com/workers-ai/models/#text-embeddings) |
+| [`VectorizeToolset`](#rag-with-vectorize) | Semantic search + knowledge storage | [Vectorize](https://developers.cloudflare.com/vectorize/) |
+| [`D1MessageHistory`](#conversation-persistence-with-d1) | Conversation history across sessions | [D1](https://developers.cloudflare.com/d1/) |
+| [`GatewayObservability`](#observability) | Logs, cost tracking, analytics, feedback | [AI Gateway](https://developers.cloudflare.com/ai-gateway/) |
 
 ---
 
 ## Setting Up Cloudflare
 
-### Step 1: Get your Account ID
+### 1. Get your Account ID
 
-Go to the [Cloudflare dashboard](https://dash.cloudflare.com). Your Account ID is on the right sidebar of the overview page. Copy it.
+Go to [dash.cloudflare.com](https://dash.cloudflare.com). Account ID is on the right sidebar.
 
-### Step 2: Create an API Token
+### 2. Create an API Token
 
-Go to [API Tokens](https://dash.cloudflare.com/profile/api-tokens) → **Create Token** → **Custom token**.
+[API Tokens](https://dash.cloudflare.com/profile/api-tokens) → **Create Token** → **Custom token**:
 
-Add these permissions based on what you need:
+| Permission | Scope | Needed for |
+|-----------|-------|-----------|
+| **Workers AI** → Read | Account | CloudflareProvider, CloudflareEmbeddingModel |
+| **Browser Rendering** → Edit | Account | BrowserRunToolset |
+| **Vectorize** → Edit | Account | VectorizeToolset |
+| **D1** → Edit | Account | D1MessageHistory |
+| **AI Gateway** → Read | Account | GatewayObservability |
 
-| Permission | Scope | Required for |
-|-----------|-------|-------------|
-| **Workers AI** → Read | Account | `CloudflareProvider`, `CloudflareEmbeddingModel` |
-| **Browser Rendering** → Edit | Account | `BrowserRunToolset` |
-| **Vectorize** → Edit | Account | `VectorizeToolset` |
-| **D1** → Edit | Account | `D1MessageHistory` |
-| **AI Gateway** → Read | Account | `GatewayObservability` |
+Start with just **Workers AI → Read** and **Browser Rendering → Edit**.
 
-For getting started, just add **Workers AI → Read** and **Browser Rendering → Edit**.
-
-### Step 3: Set environment variables
+### 3. Set environment variables
 
 ```bash
 export CLOUDFLARE_ACCOUNT_ID="your-account-id"
 export CLOUDFLARE_API_TOKEN="your-api-token"
 ```
 
-Or put them in a `.env` file and load with `python-dotenv`.
-
-### Step 4 (Optional): Create Cloudflare resources
-
-For RAG (Vectorize):
-```bash
-# Install wrangler if you don't have it
-npm install -g wrangler
-
-# Create a vector index
-npx wrangler vectorize create my-knowledge-base --dimensions 768 --metric cosine
-```
-
-For conversation persistence (D1):
-```bash
-npx wrangler d1 create my-conversations
-```
-
 ---
 
-## Quick Start — Simple Chat
+## Workers AI Provider
+
+Uses the OpenAI-compatible API so any Workers AI model works with PydanticAI's full feature set — tool calling, streaming, structured output.
 
 ```python
 from pydantic_ai import Agent
+from pydantic_ai_cloudflare import CloudflareProvider
 
-agent = Agent("cloudflare:@cf/meta/llama-3.3-70b-instruct-fp8-fast")
-result = agent.run_sync("What is Cloudflare?")
-print(result.output)
-```
-
-That's it. Inference runs on Workers AI. Logs appear automatically in your [AI Gateway dashboard](https://dash.cloudflare.com) under the `default` gateway.
-
----
-
-## Structured Output
-
-Your LLM output is a **validated Pydantic model**, not a string you have to parse.
-
-```python
-from pydantic import BaseModel
-from pydantic_ai import Agent
-
-class CompanyProfile(BaseModel):
-    name: str
-    industry: str
-    founded_year: int
-    key_products: list[str]
-
+# Any Workers AI model
 agent = Agent(
-    "cloudflare:@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-    output_type=CompanyProfile,
+    "openai:@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    provider=CloudflareProvider(),
 )
 
-result = agent.run_sync("Tell me about Cloudflare")
-company = result.output  # ← CompanyProfile instance, not a string
+# With AI Gateway metadata for tracing
+agent = Agent(
+    "openai:@cf/qwen/qwen3-30b-a3b",
+    provider=CloudflareProvider(
+        gateway_id="production",
+        gateway_metadata={"team": "ml", "env": "staging"},
+    ),
+)
 
-print(company.name)          # "Cloudflare"
-print(company.founded_year)  # 2009
-print(company.key_products)  # ["Workers", "R2", "D1", ...]
+# Without AI Gateway (direct to Workers AI)
+agent = Agent(
+    "openai:@cf/meta/llama-3.1-8b-instruct",
+    provider=CloudflareProvider(gateway_id=None),
+)
 ```
 
-Works with any Pydantic model — nested objects, lists, enums, optional fields. PydanticAI handles schema conversion, validation, and automatic retries on malformed output.
+AI Gateway is on by default — every LLM call gets logged, cost-tracked, and shows up in your [dashboard](https://dash.cloudflare.com).
 
 ---
 
 ## Web Browsing with Browser Run
 
-Give your agent the ability to interact with any website.
+Give your agent tools to interact with any website. No Selenium, no local browser.
 
 ```python
 from pydantic import BaseModel
 from pydantic_ai import Agent
-from pydantic_ai_cloudflare import BrowserRunToolset
+from pydantic_ai_cloudflare import CloudflareProvider, BrowserRunToolset
 
 class PricingPlan(BaseModel):
     name: str
     price: str
     features: list[str]
 
-class PricingAnalysis(BaseModel):
+class PricingPage(BaseModel):
     company: str
     plans: list[PricingPlan]
     has_free_tier: bool
 
 agent = Agent(
-    "cloudflare:@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-    output_type=PricingAnalysis,
+    "openai:@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    provider=CloudflareProvider(),
+    output_type=PricingPage,
     toolsets=[BrowserRunToolset(tools=["browse", "extract"])],
 )
 
-result = agent.run_sync("Analyze pricing from cloudflare.com/plans")
+result = agent.run_sync("Analyze pricing from https://www.cloudflare.com/plans/")
 for plan in result.output.plans:
     print(f"{plan.name}: {plan.price}")
 ```
 
-### Available tools
+### Tools available
 
-| Tool | Description | Browser Run Endpoint |
-|------|------------|---------------------|
-| `browse` | Fetch any page as clean markdown | [`/markdown`](https://developers.cloudflare.com/browser-run/quick-actions/markdown-endpoint/) |
+| Tool | Description | Endpoint |
+|------|------------|---------|
+| `browse` | Fetch page as clean markdown | [`/markdown`](https://developers.cloudflare.com/browser-run/quick-actions/markdown-endpoint/) |
 | `extract` | AI-powered structured data extraction | [`/json`](https://developers.cloudflare.com/browser-run/quick-actions/json-endpoint/) |
-| `crawl` | Crawl an entire site (async polling) | [`/crawl`](https://developers.cloudflare.com/browser-run/quick-actions/crawl-endpoint/) |
-| `scrape` | Extract elements by CSS selectors | [`/scrape`](https://developers.cloudflare.com/browser-run/quick-actions/scrape-endpoint/) |
+| `crawl` | Crawl entire sites (async) | [`/crawl`](https://developers.cloudflare.com/browser-run/quick-actions/crawl-endpoint/) |
+| `scrape` | CSS selector extraction | [`/scrape`](https://developers.cloudflare.com/browser-run/quick-actions/scrape-endpoint/) |
 | `discover_links` | Find all links on a page | [`/links`](https://developers.cloudflare.com/browser-run/quick-actions/links-endpoint/) |
-| `screenshot` | Capture a screenshot (base64 PNG) | [`/screenshot`](https://developers.cloudflare.com/browser-run/quick-actions/screenshot-endpoint/) |
+| `screenshot` | Capture screenshot (PNG) | [`/screenshot`](https://developers.cloudflare.com/browser-run/quick-actions/screenshot-endpoint/) |
 
 ---
 
 ## RAG with Vectorize
 
-Semantic search over your knowledge base using Cloudflare Vectorize and Workers AI embeddings.
+Semantic search over a knowledge base using Cloudflare Vectorize and Workers AI embeddings.
+
+```bash
+# Create a vector index (one-time setup)
+npx wrangler vectorize create my-docs --dimensions 768 --metric cosine
+```
 
 ```python
 from pydantic_ai import Agent
-from pydantic_ai_cloudflare import BrowserRunToolset, VectorizeToolset
-
-# Tools for the agent: browse the web + search knowledge base
-browser = BrowserRunToolset(tools=["browse"])
-knowledge = VectorizeToolset(index_name="my-knowledge-base")
+from pydantic_ai_cloudflare import CloudflareProvider, BrowserRunToolset, VectorizeToolset
 
 agent = Agent(
-    "cloudflare:@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-    toolsets=[browser, knowledge],
+    "openai:@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    provider=CloudflareProvider(),
+    toolsets=[
+        BrowserRunToolset(tools=["browse"]),
+        VectorizeToolset(index_name="my-docs"),
+    ],
     system_prompt=(
-        "You are a research assistant. Use browse to read web pages "
-        "and store_knowledge to save important findings. Use "
-        "search_knowledge to find information you've previously stored."
+        "Use browse to read web pages. Use store_knowledge to save findings. "
+        "Use search_knowledge to find previously stored information."
     ),
 )
-
-result = agent.run_sync(
-    "Read https://developers.cloudflare.com/workers-ai/ and store "
-    "the key points. Then tell me what Workers AI can do."
-)
 ```
 
-The full Cloudflare-native RAG pipeline:
+Full pipeline on Cloudflare: `Browser Run → Workers AI embeddings → Vectorize → Workers AI`
 
-```
-Browser Run (crawl) → Workers AI (embed) → Vectorize (store) → Workers AI (query)
-```
+---
 
-No Pinecone. No OpenAI embeddings. No external dependencies.
+## Embeddings
+
+Use Workers AI embedding models directly with PydanticAI's Embedder system.
+
+```python
+from pydantic_ai_cloudflare import CloudflareEmbeddingModel
+
+model = CloudflareEmbeddingModel()  # defaults to bge-base-en-v1.5, 768 dims
+result = await model.embed("What is Cloudflare?", input_type="query")
+print(len(result.embeddings[0]))  # 768
+```
 
 ---
 
 ## Conversation Persistence with D1
 
-Conversations survive across sessions using Cloudflare D1 (serverless SQLite).
+```bash
+# Create a D1 database (one-time setup)
+npx wrangler d1 create my-chat-db
+```
 
 ```python
-import asyncio
 from pydantic_ai import Agent
-from pydantic_ai_cloudflare import D1MessageHistory
+from pydantic_ai_cloudflare import CloudflareProvider, D1MessageHistory
 
+agent = Agent(
+    "openai:@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    provider=CloudflareProvider(),
+)
 history = D1MessageHistory(database_id="your-d1-database-id")
 
-async def chat(session_id: str, message: str) -> str:
-    agent = Agent("cloudflare:@cf/meta/llama-3.3-70b-instruct-fp8-fast")
+# Load previous conversation
+messages = await history.get_messages("session-123")
 
-    # Load previous conversation
-    messages = await history.get_messages(session_id)
+# Run agent with context
+result = await agent.run("Follow up question", message_history=messages)
 
-    # Run agent with history
-    result = await agent.run(message, message_history=messages)
-
-    # Save updated conversation
-    await history.save_messages(session_id, result.all_messages())
-    return result.output
-
-# First session
-asyncio.run(chat("user-123", "My name is Alice and I work at Cloudflare"))
-# Second session (remembers context)
-asyncio.run(chat("user-123", "Where do I work?"))
-# → "You work at Cloudflare"
+# Save for next time
+await history.save_messages("session-123", result.all_messages())
 ```
 
 ---
 
-## Observability — Zero Config
+## Observability
 
-When you use `CloudflareProvider`, every LLM call routes through [AI Gateway](https://developers.cloudflare.com/ai-gateway/) automatically. You get logging, cost tracking, and analytics **without writing any extra code**.
+Every LLM call through `CloudflareProvider` is logged via AI Gateway automatically. Query those logs programmatically:
 
 ```python
 from pydantic_ai_cloudflare import GatewayObservability
 
 obs = GatewayObservability()
 
-# Query logs
-logs = await obs.get_logs(limit=10, model="llama-3.3-70b")
+logs = await obs.get_logs(limit=10)
 for log in logs:
-    print(f"{log['model']}: {log['tokens_in']}→{log['tokens_out']} tokens, cached={log['cached']}")
+    print(f"{log['model']}: {log['tokens_in']}+{log['tokens_out']} tokens")
 
-# Add feedback to a log entry
+# Add feedback
 await obs.add_feedback(logs[0]["id"], score=95, feedback=1)
-
-# Get analytics
-analytics = await obs.get_analytics(start="2026-04-01T00:00:00Z")
 ```
-
-**What you get for free:**
-- Every request logged with full metadata
-- Token usage and cost per request
-- Cache hit/miss tracking
-- Custom metadata filtering (trace IDs, session IDs, user IDs)
-- Dashboard at [dash.cloudflare.com](https://dash.cloudflare.com) → AI → AI Gateway
 
 ---
 
 ## Code Mode (with Monty)
 
-Works with [PydanticAI Code Mode](https://ai.pydantic.dev/capabilities/code-mode/). Instead of sequential tool calls, the LLM writes one Python script that calls tools in parallel. ~80% fewer LLM round-trips.
+Works with [PydanticAI Code Mode](https://ai.pydantic.dev/capabilities/code-mode/). The LLM writes Python that calls your tools in parallel — Monty executes it safely.
 
 ```bash
 pip install 'pydantic-ai-harness[code-mode]'
@@ -272,10 +275,11 @@ pip install 'pydantic-ai-harness[code-mode]'
 ```python
 from pydantic_ai import Agent
 from pydantic_ai_harness import CodeMode
-from pydantic_ai_cloudflare import BrowserRunToolset
+from pydantic_ai_cloudflare import CloudflareProvider, BrowserRunToolset
 
 agent = Agent(
-    "cloudflare:@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    "openai:@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    provider=CloudflareProvider(),
     capabilities=[CodeMode()],
     toolsets=[BrowserRunToolset()],
 )
@@ -283,113 +287,43 @@ agent = Agent(
 result = agent.run_sync(
     "Compare pricing on cloudflare.com/plans and aws.amazon.com/lambda/pricing"
 )
-# LLM writes Python that browses both pages in parallel,
-# extracts pricing, and compares them — all in ONE model call.
 ```
 
 ---
 
-## Explicit Configuration
+## Notebooks
 
-### Custom provider settings
+Step-by-step walkthroughs in the [`notebooks/`](notebooks/) directory:
 
-```python
-from pydantic_ai_cloudflare import CloudflareProvider
-
-provider = CloudflareProvider(
-    account_id="your-account-id",
-    api_key="your-api-token",
-    gateway_id="production",                     # Custom AI Gateway
-    gateway_metadata={"team": "data-science"},   # Custom metadata on every request
-)
-```
-
-### Bypass AI Gateway
-
-```python
-provider = CloudflareProvider(
-    account_id="...", api_key="...",
-    gateway_id=None,  # Direct to Workers AI, no gateway
-)
-```
-
-### Choose which Browser Run tools to expose
-
-```python
-from pydantic_ai_cloudflare import BrowserRunToolset
-
-# Only browse + extract (no crawl, scrape, links, screenshot)
-toolset = BrowserRunToolset(tools=["browse", "extract"])
-```
-
-### Workers AI models
-
-Any model on [Workers AI](https://developers.cloudflare.com/workers-ai/models/) works:
-
-```python
-# Large model — best quality
-"cloudflare:@cf/meta/llama-3.3-70b-instruct-fp8-fast"
-
-# Reasoning model
-"cloudflare:@cf/qwen/qwen3-30b-a3b"
-
-# Vision model
-"cloudflare:@cf/google/gemma-4-26b-a4b-it"
-
-# Small + fast
-"cloudflare:@cf/meta/llama-3.1-8b-instruct"
-```
+| Notebook | What you'll build |
+|----------|------------------|
+| [01_getting_started](notebooks/01_getting_started.ipynb) | Set up credentials, first agent, structured output |
+| [02_web_research](notebooks/02_web_research.ipynb) | Browse websites, extract structured data |
+| [03_rag_pipeline](notebooks/03_rag_pipeline.ipynb) | Crawl → embed → store → query (full RAG) |
+| [04_persistent_chat](notebooks/04_persistent_chat.ipynb) | Multi-session conversations with D1 |
 
 ---
 
 ## Architecture
 
 ```
-Your Python code (laptop, server, CI, notebook)
+Your Python code (runs anywhere)
   │
-  ├─ CloudflareProvider ──────────→ Workers AI ─────→ AI Gateway
-  │   (LLM inference)                (free tier)       (auto logging)
-  │
-  ├─ BrowserRunToolset ──────────→ Browser Run
-  │   (browse, extract, crawl)       (headless Chrome on edge)
-  │
-  ├─ CloudflareEmbeddingModel ───→ Workers AI Embeddings
-  │   (text → vectors)               (bge-base/large)
-  │
-  ├─ VectorizeToolset ───────────→ Vectorize
-  │   (search + store knowledge)     (vector database)
-  │
-  ├─ D1MessageHistory ──────────→ D1
-  │   (conversation persistence)     (serverless SQLite)
-  │
-  ├─ GatewayObservability ──────→ AI Gateway API
-  │   (logs, cost, feedback)          (REST API)
-  │
-  └─ CodeMode (Monty) ──────────→ runs in-process
-      (sandboxed code execution)     (<1μs startup)
+  ├─ CloudflareProvider ──→ Workers AI ──→ AI Gateway (auto-logging)
+  ├─ BrowserRunToolset ───→ Browser Run (headless Chrome on edge)
+  ├─ CloudflareEmbeddingModel → Workers AI Embeddings
+  ├─ VectorizeToolset ────→ Vectorize (vector database)
+  ├─ D1MessageHistory ───→ D1 (serverless SQLite)
+  ├─ GatewayObservability → AI Gateway REST API
+  └─ CodeMode (Monty) ───→ runs in-process (<1μs startup)
 ```
-
----
-
-## Examples
-
-| Example | What it shows |
-|---------|-------------|
-| [`simple_chat.py`](examples/simple_chat.py) | Minimal agent — 5 lines |
-| [`structured_output.py`](examples/structured_output.py) | Pydantic model as LLM output |
-| [`research_agent.py`](examples/research_agent.py) | Browse web + extract structured data |
-| [`rag_pipeline.py`](examples/rag_pipeline.py) | Crawl → embed → store → query |
-| [`persistent_chat.py`](examples/persistent_chat.py) | Multi-session conversations with D1 |
-| [`code_mode_research.py`](examples/code_mode_research.py) | Parallel research with Monty |
-
----
 
 ## Roadmap
 
-- [x] **v0.1.0** — CloudflareProvider, BrowserRunToolset, CloudflareEmbeddingModel, VectorizeToolset, D1MessageHistory, GatewayObservability
-- [ ] **v0.2.0** — Integration tests with VCR cassettes, AI Search (AutoRAG) support
+- [x] **v0.1.0** — Provider, Browser Run, Embeddings, Vectorize, D1, Gateway
+- [ ] **v0.2.0** — VCR cassette integration tests, AI Search (AutoRAG) support
 - [ ] **v0.3.0** — Upstream CloudflareProvider to `pydantic/pydantic-ai`
-- [ ] **v1.0.0** — Stable API, full documentation site
+- [ ] **v1.0.0** — Stable API, full docs site
 
 ## License
 
