@@ -113,4 +113,12 @@ def cloudflare_agent(
     if toolsets:
         agent_kwargs["toolsets"] = toolsets
 
+    # Workers AI default max_tokens is too low for structured output --
+    # models truncate JSON mid-field. Set a sensible default unless
+    # the user explicitly passed model_settings.
+    if "model_settings" not in agent_kwargs:
+        from pydantic_ai.settings import ModelSettings
+
+        agent_kwargs["model_settings"] = ModelSettings(max_tokens=4096)
+
     return Agent(cf_model, **agent_kwargs)

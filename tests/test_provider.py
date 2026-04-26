@@ -139,7 +139,7 @@ class TestModelProfiles:
         assert profile is not None
         assert profile.supports_json_object_output is True
         assert profile.supports_json_schema_output is False
-        assert profile.default_structured_output_mode == "json_schema"
+        assert profile.default_structured_output_mode == "tool"
 
     def test_glm_no_tool_choice(self) -> None:
         """GLM doesn't support tool_choice -- can't force tool calling."""
@@ -177,7 +177,7 @@ class TestModelProfiles:
         profile = cloudflare_model_profile("@cf/deepseek-ai/deepseek-r1-distill-qwen-32b")
         assert profile.supports_json_object_output is True
         assert profile.supports_json_schema_output is False
-        assert profile.default_structured_output_mode == "json_schema"
+        assert profile.default_structured_output_mode == "tool"
         assert profile.supports_thinking is True
 
     def test_nemotron_has_thinking(self) -> None:
@@ -194,7 +194,7 @@ class TestModelProfiles:
         profile = cloudflare_model_profile("@cf/meta/llama-3.3-70b-instruct-fp8-fast")
         assert profile.supports_json_object_output is True
         assert profile.supports_json_schema_output is False
-        assert profile.default_structured_output_mode == "json_schema"
+        assert profile.default_structured_output_mode == "tool"
         assert profile.supports_tools is True  # tools still work for BrowserRun etc
 
     def test_all_models_have_schema_transformer(self) -> None:
