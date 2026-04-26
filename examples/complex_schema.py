@@ -1,7 +1,9 @@
-"""Complex nested schema — market research report.
+"""Complex nested schema — company research report.
 
-Demonstrates that pydantic-ai-cloudflare handles deeply nested
-Pydantic models with lists, dicts, optionals, and 7+ nested types.
+Demonstrates cf_structured() handling deeply nested Pydantic models
+with Literal types, lists of nested models, and Optional fields.
+
+Tested on all 6 major Workers AI models: Llama, Qwen, Kimi, Gemma, GLM, DeepSeek.
 
 Set environment variables:
     CLOUDFLARE_ACCOUNT_ID=your-account-id
@@ -11,117 +13,101 @@ Run:
     uv run python examples/complex_schema.py
 """
 
+from typing import Literal
+
 from pydantic import BaseModel
-from pydantic_ai import Agent
 
-from pydantic_ai_cloudflare import BrowserRunToolset, cloudflare_model
-
-
-class FundingRound(BaseModel):
-    round_type: str  # Seed, Series A, etc.
-    amount_usd: int | None = None
-    date: str | None = None
-    lead_investor: str | None = None
+from pydantic_ai_cloudflare import cf_structured_sync
 
 
-class Executive(BaseModel):
+class NewsItem(BaseModel):
+    headline: str
+    summary: str
+    relevance: str
+
+
+class TriggerEvent(BaseModel):
+    event: str
+    priority: Literal["HIGH", "MEDIUM", "LOW"]
+
+
+class HiringSignal(BaseModel):
+    role: str
+    insight: str
+
+
+class Company(BaseModel):
     name: str
-    title: str
+    industry: str
+    employees: str
 
 
-class Competitor(BaseModel):
-    name: str
-    overlap: str  # direct, indirect, adjacent
-    strength: str  # stronger, weaker, comparable
+class MarketIntel(BaseModel):
+    news: list[NewsItem]
+    triggers: list[TriggerEvent]
+    hiring: list[HiringSignal]
 
 
-class ProductFeature(BaseModel):
-    name: str
-    category: str
-    is_differentiator: bool
+class Positioning(BaseModel):
+    value_prop: str
+    strengths: list[str]
+    risks: list[str]
+    recommended_actions: list[str]
 
 
-class PricingTier(BaseModel):
-    name: str
-    price: str
-    billing: str
-    features: list[str]
-    limits: dict[str, str]
+class TechAssessment(BaseModel):
+    score: int
+    signals: list[str]
+    assessment: str
 
 
-class MarketSegment(BaseModel):
-    name: str
-    tam_usd: str | None = None
-    trends: list[str]
+class NextStep(BaseModel):
+    action: str
+    reasoning: str
+    priority: Literal["HIGH", "MEDIUM", "LOW"]
 
 
 class CompanyReport(BaseModel):
-    """Full company research report — 20+ fields, 7 nested models."""
+    """7 top-level fields, 7 nested models, Literal types."""
 
-    # Basic
-    name: str
-    website: str
-    founded_year: int
-    headquarters: str
-    employee_count: int
-    description: str
-    business_model: str
-
-    # People
-    founders: list[Executive]
-    leadership: list[Executive]
-
-    # Product
-    products: list[ProductFeature]
-    pricing: list[PricingTier]
-
-    # Market
-    target_markets: list[MarketSegment]
-    competitors: list[Competitor]
-
-    # Funding
-    funding_rounds: list[FundingRound]
-    total_funding_usd: int | None = None
-    is_public: bool
-
-    # SWOT
-    strengths: list[str]
-    weaknesses: list[str]
-    opportunities: list[str]
-    threats: list[str]
+    overview: str
+    tldr: str
+    company: Company
+    market: MarketIntel
+    positioning: Positioning
+    tech: TechAssessment
+    next_steps: list[NextStep]
 
 
-agent = Agent(
-    cloudflare_model(),
-    output_type=CompanyReport,
-    toolsets=[BrowserRunToolset(tools=["browse", "extract"])],
-    system_prompt=(
-        "You are a market research analyst. When asked about a company, "
-        "use the browse and extract tools to gather real data from their "
-        "website. Return a comprehensive company report."
-    ),
+# Using cf_structured_sync() which handles Workers AI quirks:
+# - Schema injection into system prompt
+# - response_format: json_object
+# - Custom retry with error feedback
+# - Works on ALL Workers AI models
+result = cf_structured_sync(
+    "Research report on a fictional SaaS company called 'NovaPay' that provides "
+    "payment processing for e-commerce. They have 500 employees, are growing fast, "
+    "and recently raised Series C. Include 3 news items, 3 triggers, 2 hiring "
+    "signals, and 5 next steps.",
+    CompanyReport,
+    model="@cf/meta/llama-3.3-70b-instruct-fp8-fast",
 )
 
-result = agent.run_sync(
-    "Research Cloudflare from their website (cloudflare.com). "
-    "Fill in as much of the report as you can from public information."
-)
-
-report = result.output  # CompanyReport — validated, typed, complete
-
-print(f"Company: {report.name}")
-print(f"Founded: {report.founded_year}")
-print(f"Employees: {report.employee_count}")
-print(f"Business model: {report.business_model}")
-print("\nFounders:")
-for f in report.founders:
-    print(f"  {f.name} — {f.title}")
-print(f"\nProducts ({len(report.products)}):")
-for p in report.products[:5]:
-    print(f"  {'*' if p.is_differentiator else '-'} {p.name} ({p.category})")
-print(f"\nPricing ({len(report.pricing)} tiers):")
-for t in report.pricing:
-    print(f"  {t.name}: {t.price}")
-print("\nSWOT:")
-print(f"  Strengths: {report.strengths[:3]}")
-print(f"  Weaknesses: {report.weaknesses[:3]}")
+print(f"Company: {result.company.name} ({result.company.industry})")
+print(f"Employees: {result.company.employees}")
+print(f"\nOverview: {result.overview[:200]}...")
+print(f"\nNews ({len(result.market.news)}):")
+for n in result.market.news:
+    print(f"  {n.headline}")
+print(f"\nTriggers ({len(result.market.triggers)}):")
+for t in result.market.triggers:
+    print(f"  [{t.priority}] {t.event}")
+print(f"\nHiring ({len(result.market.hiring)}):")
+for h in result.market.hiring:
+    print(f"  {h.role}: {h.insight}")
+print(f"\nPositioning: {result.positioning.value_prop[:100]}")
+print(f"Strengths: {result.positioning.strengths}")
+print(f"\nTech score: {result.tech.score}")
+print(f"\nNext steps ({len(result.next_steps)}):")
+for s in result.next_steps:
+    print(f"  [{s.priority}] {s.action}")

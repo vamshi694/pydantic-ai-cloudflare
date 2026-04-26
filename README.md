@@ -102,6 +102,7 @@ Cloudflare provides a complete AI infrastructure stack — **all with free tiers
 | `D1MessageHistory` | Conversation persistence | [D1](https://developers.cloudflare.com/d1/) |
 | `GatewayObservability` | Logs, cost, analytics, feedback | [AI Gateway](https://developers.cloudflare.com/ai-gateway/) |
 | `list_models()` / `recommend_model()` | Model discovery + recommendations | — |
+| `cf_structured()` | Complex structured output that works on ALL models | [Workers AI](https://developers.cloudflare.com/workers-ai/) |
 | `simplify_schema()` / `schema_stats()` | Schema optimization for reliability | — |
 
 ### What we handle that's hard
@@ -346,6 +347,47 @@ stats = schema_stats(MyComplexModel)
 #  'field_count': 26, 'nested_model_count': 9,
 #  'recommendation': 'Large -- may need retries...'}
 ```
+
+---
+
+## Complex Structured Output — `cf_structured()`
+
+PydanticAI's built-in structured output uses tool calling, which breaks on Workers AI for complex schemas (null arguments, malformed retries). `cf_structured()` bypasses this and calls Workers AI directly with the same approach as `langchain-cloudflare`:
+
+```python
+from pydantic_ai_cloudflare import cf_structured_sync
+
+result = cf_structured_sync(
+    "Research report on NovaPay, a payment processing startup",
+    CompanyReport,  # 7 nested models, Literal types, lists
+    model="@cf/qwen/qwen3-30b-a3b-fp8",
+)
+print(result.company.name)   # validated Pydantic object
+print(result.next_steps[0])  # NextStep(action=..., priority="HIGH")
+```
+
+How it works:
+1. Generates + simplifies JSON schema from your Pydantic model
+2. Injects schema into system prompt with strict formatting instructions
+3. Sets `response_format: json_object` to force valid JSON
+4. Parses response (handles dict content, markdown fences, prose wrapping)
+5. Validates against Pydantic
+6. On failure: retries with error feedback (not via API messages that Workers AI rejects)
+
+**Tested on all 6 major Workers AI models** with a 7-nested-model schema:
+
+| Model | Complex Schema (7 nested) | Time |
+|---|---|---|
+| Llama 3.3 70B | Pass | 31s |
+| Qwen 3 30B | Pass | 17s |
+| Kimi K2.6 | Pass | 55s |
+| Gemma 4 26B | Pass | 32s |
+| GLM 4.7 Flash | Pass | 24s |
+| DeepSeek R1 32B | Pass | 30s |
+
+**When to use what:**
+- Simple schemas (3-5 fields): `cloudflare_agent(output_type=MyModel)` works fine
+- Complex schemas (4+ nested models, Literal types): use `cf_structured()`
 
 ---
 
