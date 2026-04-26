@@ -1,9 +1,10 @@
-"""Workers AI model profiles declaring per-model capabilities.
+"""Workers AI model profiles.
 
-Each Workers AI model has different support for tool calling, structured
-output, thinking/reasoning, and vision.  This module maps model name
-prefixes to the correct ``ModelProfile`` so PydanticAI chooses the right
-structured output strategy automatically.
+Maps model name prefixes to ModelProfile so PydanticAI picks the right
+structured output strategy per model.
+
+TODO: Pull model capabilities from the Workers AI API instead of
+hardcoding them here. The /models endpoint might expose this eventually.
 """
 
 from __future__ import annotations

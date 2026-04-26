@@ -1,21 +1,7 @@
-"""Cloudflare D1 message history for PydanticAI.
+"""D1-backed message history for multi-session agents.
 
-Stores conversation history in Cloudflare D1 (serverless SQLite)
-for persistent multi-session agents.
-
-Usage::
-
-    from pydantic_ai_cloudflare import D1MessageHistory
-
-    history = D1MessageHistory(database_id="my-db-id")
-
-    # Load previous conversation
-    messages = await history.get_messages("session-123")
-
-    # Run agent with history
-    result = await agent.run("Follow up question", message_history=messages)
-
-    # Save updated conversation
+Stores PydanticAI ModelMessage objects in Cloudflare D1 (serverless SQLite).
+Table is auto-created on first use.
     await history.save_messages("session-123", result.all_messages())
 """
 

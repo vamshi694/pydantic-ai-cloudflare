@@ -1,16 +1,4 @@
-"""Cloudflare Workers AI embeddings for PydanticAI.
-
-Wraps Workers AI embedding models (``@cf/baai/bge-base-en-v1.5``, etc.)
-via the OpenAI-compatible ``/v1/embeddings`` endpoint.
-
-Usage::
-
-    from pydantic_ai_cloudflare import CloudflareEmbedder
-
-    embedder = CloudflareEmbedder()
-    result = await embedder.embed_query("What is Cloudflare?")
-    # result.embeddings → [[0.012, -0.034, ...]]
-"""
+"""Workers AI embedding model for PydanticAI's Embedder system."""
 
 from __future__ import annotations
 

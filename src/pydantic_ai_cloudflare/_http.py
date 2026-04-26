@@ -1,4 +1,4 @@
-"""Shared HTTP client helpers with timeout enforcement."""
+"""Shared HTTP helpers."""
 
 from __future__ import annotations
 
@@ -10,15 +10,6 @@ DEFAULT_TIMEOUT = 60.0  # seconds
 
 
 def build_headers(api_token: str, extra: dict[str, str] | None = None) -> dict[str, str]:
-    """Build standard authorization headers.
-
-    Args:
-        api_token: The Cloudflare API token.
-        extra: Additional headers to merge.
-
-    Returns:
-        Headers dict with Authorization and Content-Type.
-    """
     headers: dict[str, str] = {
         "Authorization": f"Bearer {api_token}",
         "Content-Type": "application/json",
@@ -29,26 +20,11 @@ def build_headers(api_token: str, extra: dict[str, str] | None = None) -> dict[s
 
 
 def create_async_client(timeout: float = DEFAULT_TIMEOUT) -> httpx.AsyncClient:
-    """Create an httpx async client with the configured timeout.
-
-    Args:
-        timeout: Request timeout in seconds.
-
-    Returns:
-        A configured httpx.AsyncClient.
-    """
     return httpx.AsyncClient(timeout=timeout)
 
 
 def check_api_response(data: Any) -> None:
-    """Raise if the Cloudflare API returned a ``success=false`` envelope.
-
-    Args:
-        data: Parsed JSON response body.
-
-    Raises:
-        CloudflareAPIError: When the API indicates failure.
-    """
+    """Raise if CF API returned {success: false}."""
     from ._errors import CloudflareAPIError
 
     if isinstance(data, dict) and not data.get("success", True):

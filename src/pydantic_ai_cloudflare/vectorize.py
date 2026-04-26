@@ -165,7 +165,10 @@ class VectorizeToolset(AbstractToolset[Any]):
     # -- Tool implementations --
 
     async def _embed(self, texts: Sequence[str]) -> list[list[float]]:
-        """Embed texts using Workers AI."""
+        """Embed texts using Workers AI.
+
+        # TODO: batch large inputs to avoid hitting the per-request token limit
+        """
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             resp = await client.post(
                 self._ai_url(self._embedding_model),

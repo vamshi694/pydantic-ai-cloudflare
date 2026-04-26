@@ -1,4 +1,4 @@
-"""Shared authentication helpers for Cloudflare services."""
+"""Resolve Cloudflare credentials from params or env vars."""
 
 from __future__ import annotations
 
@@ -8,17 +8,7 @@ from ._errors import MISSING_ACCOUNT_ID, MISSING_API_TOKEN, CloudflareConfigErro
 
 
 def resolve_account_id(account_id: str | None = None) -> str:
-    """Resolve the Cloudflare account ID from parameter or environment.
-
-    Args:
-        account_id: Explicit account ID, or None to read from env.
-
-    Returns:
-        The resolved account ID.
-
-    Raises:
-        CloudflareConfigError: If no account ID is found.
-    """
+    """Check param, then CLOUDFLARE_ACCOUNT_ID, then CF_ACCOUNT_ID."""
     value = account_id or os.environ.get("CLOUDFLARE_ACCOUNT_ID") or os.environ.get("CF_ACCOUNT_ID")
     if not value:
         raise CloudflareConfigError(MISSING_ACCOUNT_ID)
@@ -26,17 +16,7 @@ def resolve_account_id(account_id: str | None = None) -> str:
 
 
 def resolve_api_token(api_key: str | None = None) -> str:
-    """Resolve the Cloudflare API token from parameter or environment.
-
-    Args:
-        api_key: Explicit API token, or None to read from env.
-
-    Returns:
-        The resolved API token.
-
-    Raises:
-        CloudflareConfigError: If no API token is found.
-    """
+    """Check param, then CLOUDFLARE_API_TOKEN, CF_API_TOKEN, CF_AI_API_TOKEN."""
     value = (
         api_key
         or os.environ.get("CLOUDFLARE_API_TOKEN")

@@ -1,28 +1,23 @@
-"""Centralized error types for pydantic-ai-cloudflare."""
+"""Error types."""
 
 from __future__ import annotations
 
 
 class CloudflareConfigError(ValueError):
-    """Raised when required configuration is missing or invalid."""
+    """Missing or invalid configuration."""
 
 
 class CloudflareAPIError(RuntimeError):
-    """Raised when a Cloudflare API returns an unexpected error."""
+    """Unexpected API error from Cloudflare."""
 
 
-# Common error messages
 MISSING_ACCOUNT_ID = (
-    "Cloudflare account ID is required. Provide it via the account_id parameter "
-    "or set the CLOUDFLARE_ACCOUNT_ID environment variable."
+    "Cloudflare account ID is required. Set CLOUDFLARE_ACCOUNT_ID env var "
+    "or pass account_id parameter."
 )
 
 MISSING_API_TOKEN = (
-    "Cloudflare API token is required. Provide it via the api_key parameter "
-    "or set the CLOUDFLARE_API_TOKEN environment variable."
+    "Cloudflare API token is required. Set CLOUDFLARE_API_TOKEN env var or pass api_key parameter."
 )
 
-BROWSER_RUN_BINARY_ERROR = (
-    "Browser Run returned {content_type} instead of binary data for "
-    "/{mode}. The API may have returned an error."
-)
+BROWSER_RUN_BINARY_ERROR = "Browser Run returned {content_type} instead of binary data for /{mode}."

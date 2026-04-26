@@ -1,19 +1,7 @@
-"""Browser Run toolset for PydanticAI agents.
+"""Browser Run toolset — web browsing tools for PydanticAI agents.
 
-Gives agents the ability to browse the web, extract structured data,
-crawl sites, scrape elements, discover links, and take screenshots --
-all via Cloudflare Browser Run's REST API.
-
-Usage::
-
-    from pydantic_ai import Agent
-    from pydantic_ai_cloudflare import BrowserRunToolset
-
-    agent = Agent(
-        "cloudflare:@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-        toolsets=[BrowserRunToolset()],
-    )
-    result = agent.run_sync("What's on the Cloudflare pricing page?")
+Wraps Cloudflare Browser Run Quick Actions REST API:
+https://developers.cloudflare.com/browser-run/quick-actions/
 """
 
 from __future__ import annotations

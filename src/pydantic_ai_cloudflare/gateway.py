@@ -1,16 +1,8 @@
-"""Cloudflare AI Gateway observability APIs.
+"""AI Gateway observability — logs, analytics, feedback.
 
-Query logs, track costs, and add feedback programmatically
-via the AI Gateway REST API.
-
-Usage::
-
-    from pydantic_ai_cloudflare import GatewayObservability
-
-    obs = GatewayObservability(gateway_id="default")
-    logs = await obs.get_logs(limit=10)
-    cost = await obs.get_total_cost()
-    await obs.add_feedback(log_id="abc123", score=1)
+# FIXME: get_analytics uses the REST endpoint but the GraphQL API
+# (aiGatewayRequestsAdaptiveGroups) gives much richer data. Should
+# offer both and default to GraphQL when available.
 """
 
 from __future__ import annotations
