@@ -2,17 +2,23 @@
 
 PydanticAI integration for Cloudflare's AI stack — Workers AI, Browser Run, Vectorize, D1, and AI Gateway.
 
+[![PyPI](https://img.shields.io/pypi/v/pydantic-ai-cloudflare)](https://pypi.org/project/pydantic-ai-cloudflare/)
+[![Python](https://img.shields.io/pypi/pyversions/pydantic-ai-cloudflare)](https://pypi.org/project/pydantic-ai-cloudflare/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 ## Why This Exists
 
-If you're building AI agents in Python, you probably use PydanticAI (or are considering it). If you use Cloudflare, you have access to free LLM inference, serverless web browsing, vector search, SQL storage, and request logging — but there's no PydanticAI integration for any of it.
+If you're building AI agents in Python, you probably use PydanticAI. If you use Cloudflare, you have access to free LLM inference, serverless web browsing, vector search, SQL storage, and request logging — but there's no PydanticAI integration for any of it.
 
-This package connects them. One `pip install`, and you get:
+This package connects them:
 
-- **Free LLM inference** via Workers AI (Llama 3.3, Qwen 3, Gemma 4, etc.) — no OpenAI key needed
-- **Web browsing** via Browser Run — headless Chrome on the edge, no local browser setup
-- **RAG** via Vectorize + Workers AI embeddings — semantic search without Pinecone
-- **Conversation persistence** via D1 — serverless SQLite, 5 GB free
-- **Zero-config observability** via AI Gateway — every LLM call logged automatically
+- **Free LLM inference** — Llama 3.3, Qwen 3, Kimi K2.6, Gemma 4, DeepSeek R1 — no OpenAI key needed
+- **Structured output that works** — handles Workers AI quirks (dict responses, markdown fencing, truncation) automatically
+- **Web browsing** — headless Chrome on the edge via Browser Run, no local browser
+- **RAG** — Vectorize + Workers AI embeddings, no Pinecone
+- **Conversation persistence** — D1 serverless SQLite, 5 GB free
+- **Zero-config observability** — every LLM call logged via AI Gateway automatically
+- **Model catalog** — `list_models()`, `recommend_model()` for discovery
 
 Everything works on Cloudflare's free tier.
 
@@ -24,10 +30,21 @@ pip install pydantic-ai-cloudflare
 
 ## Quick Start
 
+### One-liner agent
+
+```python
+from pydantic_ai_cloudflare import cloudflare_agent
+
+agent = cloudflare_agent()
+result = agent.run_sync("What is Cloudflare?")
+print(result.output)
+```
+
+### Structured output
+
 ```python
 from pydantic import BaseModel
-from pydantic_ai import Agent
-from pydantic_ai_cloudflare import cloudflare_model
+from pydantic_ai_cloudflare import cloudflare_agent
 
 class CityInfo(BaseModel):
     name: str
@@ -35,8 +52,7 @@ class CityInfo(BaseModel):
     population: int
     known_for: list[str]
 
-agent = Agent(cloudflare_model(), output_type=CityInfo)
-
+agent = cloudflare_agent(output_type=CityInfo)
 result = agent.run_sync("Tell me about Tokyo")
 city = result.output  # CityInfo, not a string
 
@@ -45,18 +61,38 @@ print(city.population)  # 13960000
 print(city.known_for)   # ["Shibuya Crossing", "Tsukiji Market", ...]
 ```
 
+### Web research agent
+
+```python
+from pydantic_ai_cloudflare import cloudflare_agent
+
+agent = cloudflare_agent(web=True)
+result = agent.run_sync("What's on the Cloudflare pricing page?")
+```
+
+### With RAG
+
+```python
+agent = cloudflare_agent(web=True, rag="my-knowledge-base")
+```
+
 Set `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` as environment variables. That's all the config you need.
 
 ## What's Included
 
 | Component | What it does | Cloudflare Service |
 |-----------|-------------|-------------------|
-| [`CloudflareProvider`](#workers-ai-provider) | LLM inference with tool calling, streaming, structured output | [Workers AI](https://developers.cloudflare.com/workers-ai/) |
+| [`cloudflare_agent()`](#quick-start) | One-liner agent factory | All |
+| [`cloudflare_model()`](#workers-ai-provider) | LLM inference with structured output | [Workers AI](https://developers.cloudflare.com/workers-ai/) |
 | [`BrowserRunToolset`](#web-browsing-with-browser-run) | Browse, scrape, extract, crawl the web | [Browser Run](https://developers.cloudflare.com/browser-run/) |
-| [`CloudflareEmbeddingModel`](#embeddings) | Text embeddings for RAG | [Workers AI](https://developers.cloudflare.com/workers-ai/models/#text-embeddings) |
+| [`CloudflareEmbeddingModel`](#embeddings) | Text embeddings for RAG | [Workers AI Embeddings](https://developers.cloudflare.com/workers-ai/models/#text-embeddings) |
 | [`VectorizeToolset`](#rag-with-vectorize) | Semantic search + knowledge storage | [Vectorize](https://developers.cloudflare.com/vectorize/) |
 | [`D1MessageHistory`](#conversation-persistence-with-d1) | Conversation history across sessions | [D1](https://developers.cloudflare.com/d1/) |
 | [`GatewayObservability`](#observability) | Logs, cost tracking, analytics, feedback | [AI Gateway](https://developers.cloudflare.com/ai-gateway/) |
+| [`list_models()`](#model-discovery) | Browse Workers AI model catalog | — |
+| [`recommend_model()`](#model-discovery) | Get the right model for your task | — |
+| [`schema_stats()`](#schema-utilities) | Check schema complexity before running | — |
+| [`simplify_schema()`](#schema-utilities) | Reduce schema tokens for better reliability | — |
 
 ---
 
@@ -290,6 +326,44 @@ Step-by-step walkthroughs in the [`notebooks/`](notebooks/) directory:
 | [04_persistent_chat](notebooks/04_persistent_chat.ipynb) | Multi-session conversations with D1 |
 
 ---
+
+## Model Discovery
+
+```python
+from pydantic_ai_cloudflare import list_models, recommend_model
+
+# See what's available
+for m in list_models():
+    print(f"{m['name']}: {m['context']} context, {m['speed']}")
+
+# Filter by capability
+reasoning_models = list_models(capability="reasoning")
+vision_models = list_models(capability="vision")
+
+# Get a recommendation
+model = recommend_model(task="structured_output", schema_size="large")
+# → "@cf/moonshotai/kimi-k2.6" (256K context, best for big schemas)
+```
+
+## Schema Utilities
+
+For complex Pydantic schemas (18+ nested models, 9K+ chars), Workers AI models can struggle. These utilities help:
+
+```python
+from pydantic_ai_cloudflare import schema_stats, simplify_schema
+
+# Check if your schema will work
+stats = schema_stats(MyComplexModel)
+print(stats)
+# {'total_chars': 9066, 'simplified_chars': 3200, 'reduction': '65%',
+#  'field_count': 26, 'nested_model_count': 9,
+#  'recommendation': 'Large -- may need retries...'}
+
+# Reduce schema size for better reliability
+schema = MyComplexModel.model_json_schema()
+simple = simplify_schema(schema)  # strips descriptions, defaults, titles
+# 9066 chars → 3200 chars (65% reduction)
+```
 
 ## Architecture
 
