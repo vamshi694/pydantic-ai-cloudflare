@@ -27,7 +27,7 @@ pip install pydantic-ai-cloudflare
 ```python
 from pydantic import BaseModel
 from pydantic_ai import Agent
-from pydantic_ai_cloudflare import CloudflareProvider
+from pydantic_ai_cloudflare import cloudflare_model
 
 class CityInfo(BaseModel):
     name: str
@@ -35,11 +35,7 @@ class CityInfo(BaseModel):
     population: int
     known_for: list[str]
 
-agent = Agent(
-    "openai:@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-    provider=CloudflareProvider(),
-    output_type=CityInfo,
-)
+agent = Agent(cloudflare_model(), output_type=CityInfo)
 
 result = agent.run_sync("Tell me about Tokyo")
 city = result.output  # CityInfo, not a string
@@ -99,28 +95,23 @@ Uses the OpenAI-compatible API so any Workers AI model works with PydanticAI's f
 
 ```python
 from pydantic_ai import Agent
-from pydantic_ai_cloudflare import CloudflareProvider
+from pydantic_ai_cloudflare import cloudflare_model, CloudflareProvider
 
-# Any Workers AI model
-agent = Agent(
-    "openai:@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-    provider=CloudflareProvider(),
-)
+# Default model (Llama 3.3 70B)
+agent = Agent(cloudflare_model())
+
+# Specific model
+agent = Agent(cloudflare_model("@cf/qwen/qwen3-30b-a3b"))
 
 # With AI Gateway metadata for tracing
-agent = Agent(
-    "openai:@cf/qwen/qwen3-30b-a3b",
-    provider=CloudflareProvider(
-        gateway_id="production",
-        gateway_metadata={"team": "ml", "env": "staging"},
-    ),
-)
+agent = Agent(cloudflare_model(
+    "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    gateway_id="production",
+    gateway_metadata={"team": "ml", "env": "staging"},
+))
 
 # Without AI Gateway (direct to Workers AI)
-agent = Agent(
-    "openai:@cf/meta/llama-3.1-8b-instruct",
-    provider=CloudflareProvider(gateway_id=None),
-)
+agent = Agent(cloudflare_model(gateway_id=None))
 ```
 
 AI Gateway is on by default — every LLM call gets logged, cost-tracked, and shows up in your [dashboard](https://dash.cloudflare.com).
@@ -134,7 +125,7 @@ Give your agent tools to interact with any website. No Selenium, no local browse
 ```python
 from pydantic import BaseModel
 from pydantic_ai import Agent
-from pydantic_ai_cloudflare import CloudflareProvider, BrowserRunToolset
+from pydantic_ai_cloudflare import cloudflare_model, BrowserRunToolset
 
 class PricingPlan(BaseModel):
     name: str
@@ -147,8 +138,7 @@ class PricingPage(BaseModel):
     has_free_tier: bool
 
 agent = Agent(
-    "openai:@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-    provider=CloudflareProvider(),
+    cloudflare_model(),
     output_type=PricingPage,
     toolsets=[BrowserRunToolset(tools=["browse", "extract"])],
 )
@@ -182,11 +172,10 @@ npx wrangler vectorize create my-docs --dimensions 768 --metric cosine
 
 ```python
 from pydantic_ai import Agent
-from pydantic_ai_cloudflare import CloudflareProvider, BrowserRunToolset, VectorizeToolset
+from pydantic_ai_cloudflare import cloudflare_model, BrowserRunToolset, VectorizeToolset
 
 agent = Agent(
-    "openai:@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-    provider=CloudflareProvider(),
+    cloudflare_model(),
     toolsets=[
         BrowserRunToolset(tools=["browse"]),
         VectorizeToolset(index_name="my-docs"),
@@ -225,11 +214,10 @@ npx wrangler d1 create my-chat-db
 
 ```python
 from pydantic_ai import Agent
-from pydantic_ai_cloudflare import CloudflareProvider, D1MessageHistory
+from pydantic_ai_cloudflare import cloudflare_model, D1MessageHistory
 
 agent = Agent(
-    "openai:@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-    provider=CloudflareProvider(),
+    cloudflare_model(),
 )
 history = D1MessageHistory(database_id="your-d1-database-id")
 
@@ -275,11 +263,10 @@ pip install 'pydantic-ai-harness[code-mode]'
 ```python
 from pydantic_ai import Agent
 from pydantic_ai_harness import CodeMode
-from pydantic_ai_cloudflare import CloudflareProvider, BrowserRunToolset
+from pydantic_ai_cloudflare import cloudflare_model, BrowserRunToolset
 
 agent = Agent(
-    "openai:@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-    provider=CloudflareProvider(),
+    cloudflare_model(),
     capabilities=[CodeMode()],
     toolsets=[BrowserRunToolset()],
 )

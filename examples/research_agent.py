@@ -15,7 +15,7 @@ Run:
 from pydantic import BaseModel
 from pydantic_ai import Agent
 
-from pydantic_ai_cloudflare import BrowserRunToolset, CloudflareProvider
+from pydantic_ai_cloudflare import BrowserRunToolset, cloudflare_model
 
 
 class PricingPlan(BaseModel):
@@ -33,8 +33,7 @@ class PricingAnalysis(BaseModel):
 
 
 agent = Agent(
-    "openai:@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-    provider=CloudflareProvider(),
+    cloudflare_model(),
     output_type=PricingAnalysis,
     toolsets=[BrowserRunToolset(tools=["browse", "extract"])],
     system_prompt=(

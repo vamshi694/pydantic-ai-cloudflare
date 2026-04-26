@@ -6,6 +6,7 @@ Routes through AI Gateway by default for zero-config observability.
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import httpx
 from openai import AsyncOpenAI
@@ -87,3 +88,49 @@ class CloudflareProvider(Provider[AsyncOpenAI]):
     @staticmethod
     def model_profile(model_name: str) -> ModelProfile | None:
         return cloudflare_model_profile(model_name)
+
+    def chat_model(self, model_name: str = "@cf/meta/llama-3.3-70b-instruct-fp8-fast") -> Any:
+        """Create an OpenAIChatModel wired to this provider.
+
+        Convenience method so you don't have to import OpenAIChatModel yourself.
+
+        Usage::
+
+            provider = CloudflareProvider()
+            agent = Agent(provider.chat_model("@cf/meta/llama-3.3-70b-instruct-fp8-fast"))
+        """
+        from pydantic_ai.models.openai import OpenAIChatModel
+
+        return OpenAIChatModel(model_name, provider=self)
+
+
+def cloudflare_model(
+    model_name: str = "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    *,
+    account_id: str | None = None,
+    api_key: str | None = None,
+    gateway_id: str | None = "default",
+    gateway_metadata: dict[str, str | int | float | bool] | None = None,
+) -> Any:
+    """Create a PydanticAI model backed by Cloudflare Workers AI.
+
+    This is the simplest way to use Workers AI with PydanticAI::
+
+        from pydantic_ai import Agent
+        from pydantic_ai_cloudflare import cloudflare_model
+
+        agent = Agent(cloudflare_model())
+
+    Or with a specific model::
+
+        agent = Agent(cloudflare_model("@cf/qwen/qwen3-30b-a3b"))
+    """
+    from pydantic_ai.models.openai import OpenAIChatModel
+
+    provider = CloudflareProvider(
+        account_id=account_id,
+        api_key=api_key,
+        gateway_id=gateway_id,
+        gateway_metadata=gateway_metadata,
+    )
+    return OpenAIChatModel(model_name, provider=provider)

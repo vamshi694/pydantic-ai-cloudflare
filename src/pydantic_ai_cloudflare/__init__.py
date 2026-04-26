@@ -6,11 +6,12 @@ from .browser_run import BrowserRunToolset
 from .d1 import D1MessageHistory
 from .embeddings import CloudflareEmbeddingModel
 from .gateway import GatewayObservability
-from .provider import CloudflareProvider
+from .provider import CloudflareProvider, cloudflare_model
 from .vectorize import VectorizeToolset
 
 __all__ = [
     "CloudflareProvider",
+    "cloudflare_model",
     "CloudflareEmbeddingModel",
     "BrowserRunToolset",
     "VectorizeToolset",

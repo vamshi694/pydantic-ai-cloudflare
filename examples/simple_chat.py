@@ -10,11 +10,10 @@ Run:
 
 from pydantic_ai import Agent
 
-from pydantic_ai_cloudflare import CloudflareProvider
+from pydantic_ai_cloudflare import cloudflare_model
 
 agent = Agent(
-    "openai:@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-    provider=CloudflareProvider(),
+    cloudflare_model(),
     system_prompt="You are a helpful assistant. Be concise.",
 )
 

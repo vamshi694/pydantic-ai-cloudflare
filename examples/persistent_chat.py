@@ -19,7 +19,7 @@ import asyncio
 
 from pydantic_ai import Agent
 
-from pydantic_ai_cloudflare import CloudflareProvider, D1MessageHistory
+from pydantic_ai_cloudflare import D1MessageHistory, cloudflare_model
 
 # Replace with your actual D1 database ID
 D1_DATABASE_ID = "your-d1-database-id"
@@ -30,8 +30,7 @@ async def main() -> None:
     history = D1MessageHistory(database_id=D1_DATABASE_ID)
 
     agent = Agent(
-        "openai:@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-        provider=CloudflareProvider(),
+        cloudflare_model(),
         system_prompt=(
             "You are a helpful assistant. Remember the context from "
             "previous messages in this conversation."

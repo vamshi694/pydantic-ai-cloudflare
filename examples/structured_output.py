@@ -14,7 +14,7 @@ Run:
 from pydantic import BaseModel
 from pydantic_ai import Agent
 
-from pydantic_ai_cloudflare import CloudflareProvider
+from pydantic_ai_cloudflare import cloudflare_model
 
 
 class CompanyProfile(BaseModel):
@@ -29,8 +29,7 @@ class CompanyProfile(BaseModel):
 
 
 agent = Agent(
-    "openai:@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-    provider=CloudflareProvider(),
+    cloudflare_model(),
     output_type=CompanyProfile,
     system_prompt="You are a business analyst. Provide accurate company information.",
 )
