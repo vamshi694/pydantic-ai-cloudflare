@@ -53,13 +53,31 @@ async def _normalize_cf_response(response: httpx.Response) -> None:
             msg["content"] = json_mod.dumps(content)
             modified = True
         elif isinstance(content, str):
-            # Fix 2: strip markdown code fences
             stripped = content.strip()
-            if stripped.startswith("```"):
-                # Remove ```json\n...\n``` or ```\n...\n```
-                stripped = re.sub(r"^```(?:json)?\s*\n?", "", stripped)
-                stripped = re.sub(r"\n?```\s*$", "", stripped)
-                msg["content"] = stripped.strip()
+            needs_fix = False
+
+            # Fix 2: strip markdown code fences
+            if "```" in stripped:
+                fenced = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", stripped, re.DOTALL)
+                if fenced:
+                    stripped = fenced.group(1).strip()
+                    needs_fix = True
+
+            # Fix 3: extract JSON from prose ("Here is the JSON: {...}")
+            if not stripped.startswith("{") and not stripped.startswith("["):
+                first_brace = stripped.find("{")
+                last_brace = stripped.rfind("}")
+                if first_brace != -1 and last_brace > first_brace:
+                    candidate = stripped[first_brace : last_brace + 1]
+                    try:
+                        json_mod.loads(candidate)
+                        stripped = candidate
+                        needs_fix = True
+                    except json_mod.JSONDecodeError:
+                        pass
+
+            if needs_fix:
+                msg["content"] = stripped
                 modified = True
 
     if modified:
