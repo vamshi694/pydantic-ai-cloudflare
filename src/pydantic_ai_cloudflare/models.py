@@ -47,7 +47,7 @@ MODELS: list[dict[str, Any]] = [
         "best_for": ["quick_tasks", "simple_schemas", "low_latency"],
     },
     {
-        "id": "@cf/qwen/qwen3-30b-a3b",
+        "id": "@cf/qwen/qwen3-30b-a3b-fp8",
         "name": "Qwen 3 30B",
         "family": "qwen",
         "params": "30B",
@@ -193,7 +193,7 @@ def recommend_model(
     if task == "reasoning":
         if speed == "very_fast":
             return "@cf/zai-org/glm-4.7-flash"
-        return "@cf/qwen/qwen3-30b-a3b"
+        return "@cf/qwen/qwen3-30b-a3b-fp8"
 
     if schema_size == "large":
         # Largest context + best instruction following
