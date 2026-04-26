@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .agent import cloudflare_agent
+from .ai_search import AISearchToolset
 from .browser_run import BrowserRunToolset
 from .d1 import D1MessageHistory
 from .embeddings import CloudflareEmbeddingModel
@@ -27,6 +28,7 @@ __all__ = [
     "list_models",
     "recommend_model",
     # Tools
+    "AISearchToolset",
     "BrowserRunToolset",
     "VectorizeToolset",
     # Embeddings

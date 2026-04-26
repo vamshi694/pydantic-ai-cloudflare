@@ -97,7 +97,8 @@ Cloudflare provides a complete AI infrastructure stack — **all with free tiers
 | `cloudflare_agent()` | One-liner agent factory with sensible defaults | All |
 | `cloudflare_model()` | LLM inference with auto response normalization | [Workers AI](https://developers.cloudflare.com/workers-ai/) |
 | `BrowserRunToolset` | 6 web interaction tools for agents | [Browser Run](https://developers.cloudflare.com/browser-run/) |
-| `VectorizeToolset` | RAG search + store tools | [Vectorize](https://developers.cloudflare.com/vectorize/) |
+| `VectorizeToolset` | RAG search + store (DIY) | [Vectorize](https://developers.cloudflare.com/vectorize/) |
+| `AISearchToolset` | Managed RAG search + chat | [AI Search](https://developers.cloudflare.com/ai-search/) |
 | `CloudflareEmbeddingModel` | Text embeddings | [Workers AI](https://developers.cloudflare.com/workers-ai/models/#text-embeddings) |
 | `D1MessageHistory` | Conversation persistence | [D1](https://developers.cloudflare.com/d1/) |
 | `GatewayObservability` | Logs, cost, analytics, feedback | [AI Gateway](https://developers.cloudflare.com/ai-gateway/) |
@@ -129,6 +130,21 @@ export CLOUDFLARE_ACCOUNT_ID="your-account-id"
 # Permissions: Workers AI → Read, Browser Rendering → Edit
 export CLOUDFLARE_API_TOKEN="your-api-token"
 ```
+
+### What each feature needs
+
+| Feature | Token Permission | CF Resource Needed | How to Create |
+|---------|-----------------|-------------------|---------------|
+| `cloudflare_agent()` | Workers AI Read | None | — |
+| `cf_structured()` | Workers AI Read | None | — |
+| `BrowserRunToolset` | Browser Rendering Edit | None | — |
+| `VectorizeToolset` | Vectorize Edit | A Vectorize index | `npx wrangler vectorize create NAME --dimensions 768 --metric cosine` |
+| `AISearchToolset` | AI Search Edit + Run | An AI Search instance | Dashboard → AI → AI Search → Create |
+| `CloudflareEmbeddingModel` | Workers AI Read | None | — |
+| `D1MessageHistory` | D1 Edit | A D1 database | `npx wrangler d1 create NAME` |
+| `GatewayObservability` | AI Gateway Read | None (auto-created) | — |
+
+Start with just **Workers AI Read** + **Browser Rendering Edit**. Add more as you need them.
 
 ### 2. Install
 
@@ -297,6 +313,25 @@ agent = cloudflare_agent(
 ```
 
 Full pipeline: `Browser Run → Workers AI embeddings → Vectorize → Workers AI`
+
+---
+
+## AI Search (Managed RAG)
+
+If you don't want to manage embeddings and Vectorize yourself, use [AI Search](https://developers.cloudflare.com/ai-search/) -- Cloudflare's fully-managed RAG. Point it at an R2 bucket or website, and it handles chunking, embedding, indexing, and search.
+
+Create an instance in the dashboard: AI → AI Search → Create
+
+```python
+from pydantic_ai_cloudflare import cloudflare_agent, AISearchToolset
+
+agent = cloudflare_agent(
+    toolsets=[AISearchToolset(instance_name="my-docs")],
+)
+result = agent.run_sync("What does our documentation say about caching?")
+```
+
+The agent gets two tools: `search` (returns relevant chunks) and `ask` (returns an AI-generated answer with citations).
 
 ---
 
