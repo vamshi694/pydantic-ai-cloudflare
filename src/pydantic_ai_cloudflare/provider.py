@@ -5,7 +5,8 @@ Routes through AI Gateway by default for zero-config observability.
 
 from __future__ import annotations
 
-import json
+import json as json_mod
+import re
 from typing import Any
 
 import httpx
@@ -15,6 +16,57 @@ from pydantic_ai.providers import Provider
 
 from ._auth import resolve_account_id, resolve_api_token
 from .profiles import cloudflare_model_profile
+
+
+async def _normalize_cf_response(response: httpx.Response) -> None:
+    """Fix Workers AI response quirks before the OpenAI SDK parses them.
+
+    Workers AI has two incompatibilities with the OpenAI spec:
+    1. Returns message.content as a dict (parsed JSON) instead of a string
+       when using response_format: json_object
+    2. Sometimes wraps JSON in markdown code fences (```json ... ```)
+
+    This event hook rewrites the raw HTTP response body to fix both issues.
+    """
+    if response.status_code != 200:
+        return
+
+    content_type = response.headers.get("content-type", "")
+    if "application/json" not in content_type:
+        return
+
+    # Need to read the body before we can inspect/modify it
+    await response.aread()
+
+    try:
+        data = response.json()
+    except Exception:
+        return
+
+    modified = False
+    for choice in data.get("choices", []):
+        msg = choice.get("message", {})
+        content = msg.get("content")
+
+        # Fix 1: dict content → JSON string
+        if isinstance(content, dict):
+            msg["content"] = json_mod.dumps(content)
+            modified = True
+        elif isinstance(content, str):
+            # Fix 2: strip markdown code fences
+            stripped = content.strip()
+            if stripped.startswith("```"):
+                # Remove ```json\n...\n``` or ```\n...\n```
+                stripped = re.sub(r"^```(?:json)?\s*\n?", "", stripped)
+                stripped = re.sub(r"\n?```\s*$", "", stripped)
+                msg["content"] = stripped.strip()
+                modified = True
+
+    if modified:
+        # Rewrite the response body so the OpenAI SDK gets clean data
+        new_body = json_mod.dumps(data).encode("utf-8")
+        response._content = new_body
+        response.headers["content-length"] = str(len(new_body))
 
 
 class CloudflareProvider(Provider[AsyncOpenAI]):
@@ -49,9 +101,11 @@ class CloudflareProvider(Provider[AsyncOpenAI]):
         if self._gateway_id is not None:
             extra_headers["cf-aig-authorization"] = f"Bearer {self._api_key}"
             if self._gateway_metadata:
-                extra_headers["cf-aig-metadata"] = json.dumps(self._gateway_metadata)
+                extra_headers["cf-aig-metadata"] = json_mod.dumps(self._gateway_metadata)
 
         if http_client is not None:
+            # User-provided client -- add our response hook
+            http_client.event_hooks.setdefault("response", []).append(_normalize_cf_response)
             self._client = AsyncOpenAI(
                 api_key=self._api_key,
                 base_url=self.base_url,
@@ -59,7 +113,10 @@ class CloudflareProvider(Provider[AsyncOpenAI]):
                 default_headers=extra_headers or None,
             )
         else:
-            own_http = httpx.AsyncClient(timeout=60.0)
+            own_http = httpx.AsyncClient(
+                timeout=60.0,
+                event_hooks={"response": [_normalize_cf_response]},
+            )
             self._client = AsyncOpenAI(
                 api_key=self._api_key,
                 base_url=self.base_url,

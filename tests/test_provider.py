@@ -170,12 +170,14 @@ class TestModelProfiles:
         assert isinstance(profile, OpenAIModelProfile)
         assert profile.openai_supports_tool_choice_required is False
 
-    def test_deepseek_has_json_mode(self) -> None:
-        """DeepSeek is in the JSON Mode supported list."""
+    def test_deepseek_uses_json_object(self) -> None:
+        """DeepSeek uses json_object for structured output (avoids tool calling bug)."""
         from pydantic_ai_cloudflare.profiles import cloudflare_model_profile
 
         profile = cloudflare_model_profile("@cf/deepseek-ai/deepseek-r1-distill-qwen-32b")
-        assert profile.supports_json_schema_output is True
+        assert profile.supports_json_object_output is True
+        assert profile.supports_json_schema_output is False
+        assert profile.default_structured_output_mode == "json_schema"
         assert profile.supports_thinking is True
 
     def test_nemotron_has_thinking(self) -> None:
@@ -185,13 +187,15 @@ class TestModelProfiles:
         assert profile is not None
         assert profile.supports_thinking is True
 
-    def test_llama_has_json_mode(self) -> None:
-        """Llama is in the JSON Mode supported list."""
+    def test_llama_uses_json_object(self) -> None:
+        """Llama uses json_object for structured output (avoids tool calling bug)."""
         from pydantic_ai_cloudflare.profiles import cloudflare_model_profile
 
         profile = cloudflare_model_profile("@cf/meta/llama-3.3-70b-instruct-fp8-fast")
-        assert profile.supports_json_schema_output is True
         assert profile.supports_json_object_output is True
+        assert profile.supports_json_schema_output is False
+        assert profile.default_structured_output_mode == "json_schema"
+        assert profile.supports_tools is True  # tools still work for BrowserRun etc
 
     def test_all_models_have_schema_transformer(self) -> None:
         """Every model should have OpenAIJsonSchemaTransformer for complex schemas."""
