@@ -121,15 +121,102 @@ class TestModelProfiles:
 
         profile = cloudflare_model_profile("@cf/qwen/qwen3-30b-a3b")
         assert profile is not None
+        assert profile.supports_tools is True
+        assert profile.supports_thinking is True
 
-    def test_gemma_profile(self) -> None:
+    def test_qwen_no_json_mode(self) -> None:
+        """Qwen is NOT in Workers AI JSON Mode list -- uses tool calling."""
+        from pydantic_ai_cloudflare.profiles import cloudflare_model_profile
+
+        profile = cloudflare_model_profile("@cf/qwen/qwen3-30b-a3b")
+        assert profile.supports_json_schema_output is False
+
+    def test_gemma_uses_json_object(self) -> None:
+        """Gemma uses json_object mode (not tool calling) for structured output."""
         from pydantic_ai_cloudflare.profiles import cloudflare_model_profile
 
         profile = cloudflare_model_profile("@cf/google/gemma-4-26b-a4b-it")
         assert profile is not None
+        assert profile.supports_json_object_output is True
+        assert profile.supports_json_schema_output is False
+        assert profile.default_structured_output_mode == "json_schema"
+
+    def test_glm_no_tool_choice(self) -> None:
+        """GLM doesn't support tool_choice -- can't force tool calling."""
+        from pydantic_ai.profiles.openai import OpenAIModelProfile
+
+        from pydantic_ai_cloudflare.profiles import cloudflare_model_profile
+
+        profile = cloudflare_model_profile("@cf/zai-org/glm-4.7-flash")
+        assert profile is not None
+        assert isinstance(profile, OpenAIModelProfile)
+        assert profile.openai_supports_tool_choice_required is False
+
+    def test_kimi_has_thinking(self) -> None:
+        from pydantic_ai_cloudflare.profiles import cloudflare_model_profile
+
+        profile = cloudflare_model_profile("@cf/moonshotai/kimi-k2.6")
+        assert profile is not None
+        assert profile.supports_thinking is True
+        assert profile.supports_tools is True
+
+    def test_mistral_no_tool_choice(self) -> None:
+        """Mistral doesn't support tool_choice."""
+        from pydantic_ai.profiles.openai import OpenAIModelProfile
+
+        from pydantic_ai_cloudflare.profiles import cloudflare_model_profile
+
+        profile = cloudflare_model_profile("@hf/nousresearch/hermes-2-pro-mistral-7b")
+        assert isinstance(profile, OpenAIModelProfile)
+        assert profile.openai_supports_tool_choice_required is False
+
+    def test_deepseek_has_json_mode(self) -> None:
+        """DeepSeek is in the JSON Mode supported list."""
+        from pydantic_ai_cloudflare.profiles import cloudflare_model_profile
+
+        profile = cloudflare_model_profile("@cf/deepseek-ai/deepseek-r1-distill-qwen-32b")
+        assert profile.supports_json_schema_output is True
+        assert profile.supports_thinking is True
+
+    def test_nemotron_has_thinking(self) -> None:
+        from pydantic_ai_cloudflare.profiles import cloudflare_model_profile
+
+        profile = cloudflare_model_profile("@cf/nvidia/nemotron-3-120b-a12b")
+        assert profile is not None
+        assert profile.supports_thinking is True
+
+    def test_llama_has_json_mode(self) -> None:
+        """Llama is in the JSON Mode supported list."""
+        from pydantic_ai_cloudflare.profiles import cloudflare_model_profile
+
+        profile = cloudflare_model_profile("@cf/meta/llama-3.3-70b-instruct-fp8-fast")
+        assert profile.supports_json_schema_output is True
+        assert profile.supports_json_object_output is True
+
+    def test_all_models_have_schema_transformer(self) -> None:
+        """Every model should have OpenAIJsonSchemaTransformer for complex schemas."""
+
+        from pydantic_ai_cloudflare.profiles import cloudflare_model_profile
+
+        models = [
+            "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+            "@cf/qwen/qwen3-30b-a3b",
+            "@cf/google/gemma-4-26b-a4b-it",
+            "@cf/zai-org/glm-4.7-flash",
+            "@cf/moonshotai/kimi-k2.6",
+            "@hf/nousresearch/hermes-2-pro-mistral-7b",
+            "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
+            "@cf/nvidia/nemotron-3-120b-a12b",
+            "@cf/totally/unknown-model",
+        ]
+        for model in models:
+            profile = cloudflare_model_profile(model)
+            assert profile is not None, f"No profile for {model}"
+            assert profile.json_schema_transformer is not None, f"No transformer for {model}"
 
     def test_unknown_model_gets_fallback(self) -> None:
         from pydantic_ai_cloudflare.profiles import cloudflare_model_profile
 
         profile = cloudflare_model_profile("@cf/totally/unknown-model")
         assert profile is not None
+        assert profile.supports_tools is True
