@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.1.6 (2026-04-27)
+
+### Changed
+- **Renamed `KnowledgeGraph` → `EntityGraph`** — honest about what it is. It's a bipartite feature graph with entity-to-entity relationship support, not a full knowledge graph with ontologies and inference. `KnowledgeGraph` kept as backward-compatible alias.
+
+### Added
+- **`add_relationship()`** — direct entity-to-entity typed edges. `kg.add_relationship("Cisco", "COMPETES_WITH", "Zscaler")`. Enables multi-hop traversal that bipartite graphs can't express.
+- **`relationship_columns`** on `build_from_records()` — automatically creates entity-to-entity edges from structured columns like `primary_competitor`, `partner`, `referred_by`.
+- **`extract_relationships=True`** — LLM extracts typed relationships (COMPETES_WITH, DISPLACED, ACQUIRED, etc.) from text columns via Workers AI.
+- **`min_group_size`** on `auto_canonicalize()` — controls merging aggressiveness. Prevents over-merging distinct entities like "Magic WAN" and "Magic Transit".
+
+### Fixed
+- **Node2Vec hash fallback removed** — was generating identical values for all entities (silent noise). Now returns empty dict if gensim not installed, with a clear warning.
+- **PageRank warning** — docstring now states it measures feature-mediated centrality on bipartite graphs, not entity importance. Recommends `community_id` and `knn_rate_*` for meaningful ML features.
+- **`auto_canonicalize` CAUTION** — docstring warns about over-merging risk.
+
+## 0.1.5 (2026-04-27)
+
+### Fixed
+- Published `auto_canonicalize` and OSS hygiene files that were missing from v0.1.4 PyPI package.
+
 ## 0.1.4 (2026-04-27)
 
 ### Added

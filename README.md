@@ -29,8 +29,8 @@ kb = KnowledgeBase("my-docs")
 answer = await kb.ask("How does caching work?")
 
 # 4. Knowledge graphs for ML feature engineering
-from pydantic_ai_cloudflare import KnowledgeGraph, profile_data
-kg = KnowledgeGraph()
+from pydantic_ai_cloudflare import EntityGraph, profile_data
+kg = EntityGraph()
 dd = profile_data(records, id_column="account_id")  # auto-classifies 25 columns
 await kg.build_from_records(records, data_dict=dd)   # 2000 rows → 4321 nodes, 52K edges
 features = kg.to_feature_dicts()                     # 29 ML features per entity
@@ -49,7 +49,7 @@ logs = await GatewayObservability().get_logs()
 | **`BrowserRunToolset`** | Browse, scrape, extract, crawl any website (headless Chrome on edge) | Yes |
 | **`KnowledgeBase`** | Managed RAG with hybrid search + BM25 + reranking | Yes |
 | **`DIYKnowledgeBase`** | Ingest URLs/files/folders → chunk → embed → Vectorize → search + rerank | Yes |
-| **`KnowledgeGraph`** | Build typed graphs from tabular data → ML features + recommendations | Local |
+| **`EntityGraph`** | Peer-adoption features + entity relationships from tabular data | Local |
 | **`cloudflare_agent()`** | One-liner PydanticAI agent wired to Workers AI | Yes |
 | **`D1MessageHistory`** | Conversation persistence across sessions | Yes |
 | **`GatewayObservability`** | Auto-logging, cost tracking, analytics for every LLM call | Yes |
@@ -526,20 +526,20 @@ How it works:
 
 ---
 
-## Knowledge Graph — ML Features from Tabular Data
+## EntityGraph — Peer-Adoption Features from Tabular Data
 
-Build typed knowledge graphs from tabular datasets. Each row becomes an entity, column values become nodes, edges represent real relationships. Then extract graph-derived features for ML.
+Build typed entity graphs from tabular datasets. Each row becomes an entity, column values become nodes, edges represent real relationships. Then extract graph-derived features for ML.
 
 ### Quick start
 
 ```python
-from pydantic_ai_cloudflare import KnowledgeGraph, profile_data
+from pydantic_ai_cloudflare import EntityGraph, profile_data
 
 # 1. Auto-profile (detects column types)
 dd = profile_data(records, id_column="account_id")
 
 # 2. Build graph
-kg = KnowledgeGraph()
+kg = EntityGraph()
 await kg.build_from_records(records, data_dict=dd)
 # 10,000 rows → 28K nodes, 153K edges in 0.25s
 
@@ -547,6 +547,33 @@ await kg.build_from_records(records, data_dict=dd)
 features = kg.to_feature_dicts()
 # 22+ features per entity: degree, pagerank, community, Node2Vec, ...
 ```
+
+### Entity-to-entity relationships
+
+Go beyond bipartite feature graphs. Add direct typed relationships between entities:
+
+```python
+# From structured columns (automatic)
+await kg.build_from_records(records, data_dict=dd,
+    relationship_columns={
+        "primary_competitor": "COMPETES_WITH",
+        "partner": "PARTNERS_WITH",
+        "referred_by": "REFERRED_BY",
+    },
+)
+
+# Manually
+kg.add_relationship("Cisco", "COMPETES_WITH", "Zscaler")
+kg.add_relationship("Acme Corp", "DISPLACED", "Palo Alto")
+
+# LLM-extracted from text columns
+await kg.build_from_records(records, data_dict=dd,
+    extract_relationships=True,
+)
+# Extracts: (Acme, DISPLACED, Zscaler), (Acme, MIGRATED_TO, Zero Trust), ...
+```
+
+Now you can traverse multi-hop paths: `Account → COMPETES_WITH → Zscaler → PROVIDES → Zero Trust`.
 
 ### Auto-canonicalization (LLM-powered)
 
@@ -558,7 +585,7 @@ alias_map = await kg.auto_canonicalize(records, ["tech_stack", "competitors"])
 # → {'ZS': 'Zscaler', 'PAN': 'Palo Alto Networks', 'K8s': 'Kubernetes', ...}
 
 # Or provide manually
-kg = KnowledgeGraph(canonical_map={"ZS": "Zscaler", "PAN": "Palo Alto"})
+kg = EntityGraph(canonical_map={"ZS": "Zscaler", "PAN": "Palo Alto"})
 ```
 
 ### Outcome-aware co-occurrence with lift
@@ -634,7 +661,7 @@ X, y = kg.to_ml_dataset("products_owned", target_columns=["products_owned"], k=5
 
 # Persist for reproducible inference
 kg.save_features("features.json")
-features = KnowledgeGraph.load_features("features.json")
+features = EntityGraph.load_features("features.json")
 ```
 
 ### Benchmarks (10,000 accounts)
