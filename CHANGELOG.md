@@ -2,6 +2,49 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.3 (2026-04-27)
+
+A correctness patch for two issues that survived v0.2.2.
+
+No breaking changes.
+
+### Fixed
+
+- **`score_one()` feature parity (round 2).** v0.2.2 over-corrected the
+  v0.2.1 undershoot: where v0.2.1 emitted *fewer* features than
+  `to_ml_dataset()`, v0.2.2 ended up emitting *more* (`knn_max_distance`
+  and the v0.2.0-era `knn_peers` snuck back in as scalar features the
+  trained model never saw). Models trained on `to_ml_dataset()`'s
+  union schema rejected v0.2.2's output for the same root cause.
+  v0.2.3:
+  - `freeze()` now snapshots the **full union of `to_ml_dataset()`'s
+    keys** (not just `to_feature_dicts()`'s) — including `knn_rate_*`
+    floats, `knn_avg_distance`, `knn_min_distance`.
+  - `score_one()` filters its output to that schema, fills missing
+    keys with 0, drops extras (specifically `knn_max_distance`).
+  - `knn_peers` is preserved as the single non-feature key — a list of
+    peer entity labels for explainability. Drop it before passing the
+    dict to a model: `{k: v for k, v in scored.items() if k != "knn_peers"}`
+    or, more robustly: `{k: v for k, v in scored.items() if isinstance(v, (int, float))}`.
+  - Updated `score_one()` docstring to make the contract explicit.
+  - End-to-end pipeline test (`test_inference_dict_feedable_to_model`)
+    proves train→infer feature sets match exactly.
+- **Friendlier warning when viz filters wipe out the whole subgraph.**
+  Calling `to_cytoscape(exclude_node_types=[...])` with a list covering
+  every type in the graph used to silently return `{nodes:[], edges:[]}`.
+  Now logs a clear WARNING explaining what the filters did and which
+  arguments to remove. (The earlier-reported `to_cytoscape(focus=...)`
+  empty-result behavior was already fixed in v0.2.2; this hardens the
+  remaining edge cases.)
+
+### Tests
+
+- +7 new tests in `tests/test_graph_v023.py` covering the round-2
+  parity contract, `knn_max_distance` non-emission, `knn_peers`
+  explainability preservation, end-to-end train→infer DataFrame
+  compatibility, `score_batch` ↔ `score_one` consistency, and the
+  filter-wipeout warning. 239 total passing.
+
 ## 0.2.2 (2026-04-27)
 
 A bugfix release driven by real CF1 production data. Fixes 8 issues

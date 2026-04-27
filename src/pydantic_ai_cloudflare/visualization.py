@@ -289,6 +289,7 @@ def _select_subgraph(
 
     # Apply type filters
     if keep_types or skip_types:
+        before = len(selected)
         filtered = set()
         for nid in selected:
             ntype = nodes.get(nid, {}).get("type", "")
@@ -298,6 +299,16 @@ def _select_subgraph(
                 continue
             filtered.add(nid)
         selected = filtered
+        # Friendlier feedback when filters wipe out the whole subgraph
+        # (real CF1 case: passing exclude_node_types covering every type
+        # in the graph silently produced an empty result).
+        if before > 0 and not selected:
+            logger.warning(
+                f"Type filters removed all {before} nodes from the selection. "
+                f"include_node_types={list(keep_types) if keep_types else None}, "
+                f"exclude_node_types={list(skip_types) if skip_types else None}. "
+                "Returning empty graph."
+            )
 
     if max_nodes is not None and len(selected) > max_nodes:
         # Truncate deterministically (priority: entities first, then by degree)

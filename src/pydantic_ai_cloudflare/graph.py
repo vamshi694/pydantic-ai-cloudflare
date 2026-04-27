@@ -2823,24 +2823,44 @@ class EntityGraph:
 
         self._frozen_label_to_nid = {self._nodes[n]["label"]: n for n in self._entity_ids}
 
-        # Snapshot the feature schema produced by ``to_feature_dicts()`` so
-        # ``score_one()`` can emit features with the *exact same shape* the
-        # training pipeline saw — including degree-by-edge-type fan-outs
-        # (HAS_INDUSTRY_degree, USES_TECH_degree, IN_ARR_RANGE_degree, etc.)
-        # that score_one would otherwise miss. Without this snapshot,
-        # to_ml_dataset() returned 43 features but score_one() only 33,
-        # silently breaking ML inference.
+        # Snapshot the FULL union of feature keys produced by ``to_ml_dataset()``
+        # so ``score_one()`` can emit a feature dict with the exact same shape
+        # the training pipeline saw. Three sources contribute keys:
+        #   1. to_feature_dicts() — structural + community + centrality + n2v_*
+        #      + per-edge-type degrees (HAS_INDUSTRY_degree, USES_TECH_degree,
+        #      IN_<COL>_RANGE_degree, COMPETES_WITH_degree, …). Per-entity
+        #      varying — the union across all entities is what training-time
+        #      DataFrame conversion uses as columns.
+        #   2. knn_rate_features(target_columns) — knn_rate_<value> floats.
+        #   3. to_ml_dataset() always adds knn_avg_distance + knn_min_distance.
+        #
+        # Earlier v0.2.2 only snapshotted #1 — score_one ended up emitting MORE
+        # features than to_ml_dataset (the symmetric overshoot of v0.2.1's
+        # undershoot). This snapshot is now exactly the union of every key
+        # to_ml_dataset can emit, so score_one's output set ⊆ training set.
         self._frozen_feature_schema: list[str] = []
         try:
-            feats = self.to_feature_dicts()
             schema_keys: set[str] = set()
-            for entity_feats in feats.values():
+            # Source 1: to_feature_dicts (per-entity union)
+            for entity_feats in self.to_feature_dicts().values():
                 schema_keys.update(entity_feats.keys())
+            # Source 2: knn_rate_<value> features (only float-valued keys —
+            # knn_peers / knn_peer_votes / own_values are diagnostic, not
+            # features, and to_ml_dataset filters them out at L2596-2598).
+            if target_columns:
+                knn_rates = self.knn_rate_features(list(target_columns), k=k)
+                for entity_rates in knn_rates.values():
+                    for key, val in entity_rates.items():
+                        if isinstance(val, float):
+                            schema_keys.add(key)
+            # Source 3: knn distance features that to_ml_dataset always adds
+            schema_keys.add("knn_avg_distance")
+            schema_keys.add("knn_min_distance")
             self._frozen_feature_schema = sorted(schema_keys)
         except Exception as e:
             logger.warning(
                 f"freeze(): could not snapshot feature schema ({e!r}); "
-                "score_one() may emit fewer features than to_ml_dataset()."
+                "score_one() may not match to_ml_dataset() exactly."
             )
 
         self._frozen = True
@@ -2929,17 +2949,34 @@ class EntityGraph:
     ) -> dict[str, Any]:
         """Score a new record using the frozen graph topology.
 
-        Returns features for `record` AS IF it had been added to the graph,
-        but without mutating any graph state. Same feature shape as
-        to_ml_dataset() for matching training-time features.
+        Returns features for ``record`` AS IF it had been added to the graph,
+        but without mutating any graph state.
+
+        **Feature parity with training-time** ``to_ml_dataset()``: the set of
+        scalar feature keys returned is exactly the union of keys produced
+        by ``kg.to_ml_dataset(target_columns=..., k=...)`` at freeze time.
+        Any keys that didn't apply to this specific record are filled with 0
+        so the output is directly feedable into a model trained on the
+        training matrix.
+
+        The dict ALSO contains one non-feature key — ``knn_peers`` — a list
+        of peer entity labels for explainability. **Drop it before passing
+        the dict to a model**::
+
+            scored = await kg.score_one(new_record)
+            for_model = {k: v for k, v in scored.items() if k != "knn_peers"}
+            # or, more robustly:
+            for_model = {k: v for k, v in scored.items()
+                         if isinstance(v, (int, float))}
 
         Args:
             record: A single row dict with the same columns used at build.
             k: Override frozen k. Default uses the k passed to freeze().
 
         Returns:
-            {feature_name: value} including all graph features and the
-            knn_rate_* features for any target_columns set in freeze().
+            ``{feature_name: float | int} | {"knn_peers": list[str]}`` —
+            scalar features (matching to_ml_dataset's union schema) plus
+            ``knn_peers`` (top-K nearest peer labels).
         """
         if not self._frozen:
             raise RuntimeError(
@@ -3081,21 +3118,25 @@ class EntityGraph:
                 else 0
             )
 
-        result["knn_peers"] = peer_labels
-
-        # Feature-schema parity with training-time to_ml_dataset(). Any
-        # key that was present in to_feature_dicts() at freeze time but
-        # didn't apply to this record gets a 0 default. This is what
-        # eliminates the 33-vs-43 feature mismatch — the trained model
-        # always sees every column it was trained on.
-        for key in self._frozen_feature_schema:
-            if key in ("knn_peers", "knn_peer_votes", "own_values", "knn_rate"):
-                # These are diagnostic/metadata, not numeric features
-                continue
-            if key.startswith("knn_rate_"):
-                # Already filled from _frozen_target_values above
-                continue
+        # Feature-schema parity with training-time to_ml_dataset(). Two-step
+        # process to guarantee score_one's output keys ⊆ to_ml_dataset's union:
+        #   (a) Fill any schema keys missing from `result` with 0.
+        #   (b) Drop any keys that aren't in the schema — historically
+        #       score_one emitted knn_max_distance (which to_ml_dataset
+        #       does not produce). Pre-v0.2.3 callers got 52 keys vs the
+        #       50 they trained on, breaking ML inference.
+        # `knn_peers` is preserved as a blessed extra (a list, not a feature)
+        # for explainability — callers who feed score_one's output to a model
+        # should drop it via:  `{k: v for k, v in scored.items() if k != "knn_peers"}`
+        # or, more robustly:    `{k: v for k, v in scored.items()
+        #                         if isinstance(v, (int, float))}`
+        schema_set = set(self._frozen_feature_schema)
+        # Step (a): fill missing
+        for key in schema_set:
             result.setdefault(key, 0)
+        # Step (b): drop extras (everything not in schema, except knn_peers)
+        result = {k: v for k, v in result.items() if k in schema_set or k == "knn_peers"}
+        result["knn_peers"] = peer_labels
 
         return result
 
