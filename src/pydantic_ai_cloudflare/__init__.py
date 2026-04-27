@@ -58,4 +58,4 @@ __all__ = [
     "extract_json_from_text",
 ]
 
-__version__ = "0.1.4"
+__version__ = "0.1.5"
