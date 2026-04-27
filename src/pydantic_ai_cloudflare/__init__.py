@@ -8,6 +8,7 @@ from .browser_run import BrowserRunToolset
 from .d1 import D1MessageHistory
 from .embeddings import CloudflareEmbeddingModel
 from .gateway import GatewayObservability
+from .knowledge import DIYKnowledgeBase, KnowledgeBase
 from .models import list_models, recommend_model
 from .provider import CloudflareProvider, cloudflare_model
 from .structured import (
@@ -33,6 +34,9 @@ __all__ = [
     "VectorizeToolset",
     # Embeddings
     "CloudflareEmbeddingModel",
+    # Knowledge base / RAG
+    "KnowledgeBase",
+    "DIYKnowledgeBase",
     # Persistence
     "D1MessageHistory",
     # Observability

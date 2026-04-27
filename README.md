@@ -296,7 +296,72 @@ The agent has 6 tools:
 
 ---
 
-## RAG with Vectorize
+## KnowledgeBase — 4-Line RAG
+
+### Path 1: Managed (recommended)
+
+```python
+from pydantic_ai_cloudflare import KnowledgeBase
+
+# Uses AI Search: hybrid search (semantic + BM25) + reranking + query rewriting
+kb = KnowledgeBase("my-docs")  # AI Search instance name
+
+# Search with hybrid retrieval + cross-encoder reranking
+results = await kb.search("How does caching work?")
+
+# Or get an AI-generated answer with citations
+answer = await kb.ask("How does caching work?")
+```
+
+Prereq: Create an AI Search instance in the dashboard (AI → AI Search). Point it at an R2 bucket or website. Done.
+
+### Path 2: DIY (full control)
+
+```python
+from pydantic_ai_cloudflare import DIYKnowledgeBase
+
+# You control: chunking, embedding model, reranker, metadata
+kb = DIYKnowledgeBase("my-vectors")
+
+# Ingest: fetches URLs via Browser Run, chunks, embeds, stores in Vectorize
+await kb.ingest([
+    "https://docs.example.com/getting-started",
+    "https://docs.example.com/api-reference",
+])
+
+# Search: embed query → Vectorize → rerank with bge-reranker-base
+results = await kb.search("How do I authenticate?", rerank=True)
+```
+
+Prereq: `npx wrangler vectorize create my-vectors --dimensions 768 --metric cosine`
+
+### What the retrieval pipeline does
+
+```
+Path 1 (KnowledgeBase):
+  Query → Query rewriting (LLM) → Embed → Vector search
+                                         ↘
+                                     BM25 keyword search
+                                         ↓
+                                     RRF Fusion
+                                         ↓
+                                     Cross-encoder reranking (bge-reranker-base)
+                                         ↓
+                                     Relevance boosting (by metadata)
+                                         ↓
+                                     Top K results
+
+Path 2 (DIYKnowledgeBase):
+  Query → Embed (bge-base-en-v1.5) → Vectorize search (top 20)
+                                         ↓
+                                     Cross-encoder reranking (bge-reranker-base)
+                                         ↓
+                                     Top 5 results
+```
+
+---
+
+## RAG with Vectorize (low-level)
 
 ```bash
 npx wrangler vectorize create my-docs --dimensions 768 --metric cosine
