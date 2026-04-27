@@ -178,7 +178,7 @@ def profile_data(
     *,
     id_column: str | None = None,
     sample_size: int = 100,
-    text_threshold: int = 80,
+    text_threshold: int = 50,
     categorical_max_cardinality: int = 50,
     list_separator_pattern: str = r"[,;|]",
 ) -> DataDictionary:
@@ -270,6 +270,49 @@ def profile_data(
                     "numeric",
                     "numeric",
                     f"{numeric_count}/{len(non_null)} values are numeric, avg={avg_len:.0f}",
+                    values[:3],
+                    stats,
+                )
+            )
+            continue
+
+        # Skip patterns: URLs, phones, UUIDs (not useful as graph nodes)
+        url_count = sum(1 for s in str_vals if _looks_like_url(s))
+        if url_count / max(len(str_vals), 1) > 0.5:
+            profiles.append(
+                ColumnProfile(
+                    col,
+                    "str",
+                    "skip",
+                    f"{url_count}/{len(str_vals)} look like URLs",
+                    values[:3],
+                    stats,
+                )
+            )
+            continue
+
+        phone_count = sum(1 for s in str_vals if _looks_like_phone(s))
+        if phone_count / max(len(str_vals), 1) > 0.5:
+            profiles.append(
+                ColumnProfile(
+                    col,
+                    "str",
+                    "skip",
+                    f"{phone_count}/{len(str_vals)} look like phone numbers",
+                    values[:3],
+                    stats,
+                )
+            )
+            continue
+
+        uuid_count = sum(1 for s in str_vals if _looks_like_uuid(s))
+        if uuid_count / max(len(str_vals), 1) > 0.5:
+            profiles.append(
+                ColumnProfile(
+                    col,
+                    "str",
+                    "skip",
+                    f"{uuid_count}/{len(str_vals)} look like UUIDs",
                     values[:3],
                     stats,
                 )
@@ -475,3 +518,22 @@ def _looks_like_date(s: str) -> bool:
         r"[A-Z][a-z]{2}\s+\d{1,2},?\s+\d{4}",  # Jan 15, 2024
     ]
     return any(re.match(p, s.strip()) for p in patterns)
+
+
+def _looks_like_url(s: str) -> bool:
+    return bool(re.match(r"https?://", s.strip(), re.IGNORECASE))
+
+
+def _looks_like_phone(s: str) -> bool:
+    # Must start with + or ( to distinguish from dates like 2024-03-15
+    return bool(re.match(r"[\+\(][\d\-\(\)\s]{6,15}$", s.strip()))
+
+
+def _looks_like_uuid(s: str) -> bool:
+    return bool(
+        re.match(
+            r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$",
+            s.strip(),
+            re.IGNORECASE,
+        )
+    )

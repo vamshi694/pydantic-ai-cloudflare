@@ -36,6 +36,7 @@ from ._http import DEFAULT_TIMEOUT, build_headers, check_api_response
 from .structured import cf_structured
 
 logger = logging.getLogger(__name__)
+_GENSIM_WARNED = False
 
 
 # ============================================================
@@ -960,7 +961,13 @@ class EntityGraph:
                     if sim > 0.65:
                         reasons[nid].append(f"embedding_sim:{sim:.2f}")
 
-        ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
+        # Filter to only entities from original records (not relationship targets)
+        entity_set = set(self._entity_ids)
+        ranked = [
+            (nid, sc)
+            for nid, sc in sorted(scores.items(), key=lambda x: x[1], reverse=True)
+            if nid in entity_set
+        ][:top_k]
         return [
             {
                 "entity": self._nodes[nid]["label"],
@@ -1296,7 +1303,13 @@ class EntityGraph:
             entity_data = rates[entity_id]
 
         if entity_data is None:
-            return []
+            return {
+                "recommendations": [],
+                "entity_found": False,
+                "peers_found": 0,
+                "own_values": [],
+                "reason": "entity not found in graph",
+            }
 
         own_values = set(entity_data.get("own_values", []))
         peers = entity_data.get("knn_peers", [])
@@ -1326,7 +1339,22 @@ class EntityGraph:
                 )
 
         recommendations.sort(key=lambda x: x["rate"], reverse=True)
-        return recommendations
+
+        reason = "recommendations found"
+        if not recommendations and not peer_votes:
+            reason = "no peers found or no target values in graph"
+        elif not recommendations and own_values:
+            reason = "all peers own same values as entity — nothing new to recommend"
+        elif not recommendations:
+            reason = f"no values exceeded min_rate={min_rate} among peers"
+
+        return {
+            "recommendations": recommendations,
+            "entity_found": True,
+            "peers_found": len(peers),
+            "own_values": list(own_values),
+            "reason": reason,
+        }
 
     def explain(
         self,
@@ -1334,6 +1362,7 @@ class EntityGraph:
         *,
         target_columns: list[str] | None = None,
         k: int = 5,
+        min_rate: float = 0.2,
     ) -> dict[str, Any]:
         """Explain WHY an entity gets its recommendations and features.
 
@@ -1403,7 +1432,12 @@ class EntityGraph:
 
         # Recommendation explanation (WHY each value is recommended)
         if target_columns:
-            recs = self.recommend(entity_id, target_columns, k=k, min_rate=0.2)
+            rec_result = self.recommend(entity_id, target_columns, k=k, min_rate=min_rate)
+            recs = (
+                rec_result.get("recommendations", [])
+                if isinstance(rec_result, dict)
+                else rec_result
+            )
             rec_explanations = []
             for rec in recs[:5]:
                 # Trace which peers have this value
@@ -1434,6 +1468,9 @@ class EntityGraph:
                     }
                 )
             explanation["recommendations"] = rec_explanations
+            explanation["recommendation_reason"] = (
+                rec_result.get("reason", "") if isinstance(rec_result, dict) else ""
+            )
 
         # Direct entity-to-entity relationships
         relationships = []
@@ -1450,6 +1487,29 @@ class EntityGraph:
         explanation["relationships"] = relationships
 
         return explanation
+
+    def compute_feature(
+        self,
+        *,
+        computation: str,
+        node_type: str | None = None,
+        target_value: str | None = None,
+        reference_filter: dict[str, str] | None = None,
+        k: int = 5,
+        aggregation: str = "mean",
+    ) -> dict[str, float]:
+        """Compute a custom feature for every entity. Delegates to feature_engine."""
+        from .feature_engine import compute_feature as _compute
+
+        return _compute(
+            self,
+            computation=computation,
+            node_type=node_type,
+            target_value=target_value,
+            reference_filter=reference_filter,
+            k=k,
+            aggregation=aggregation,
+        )
 
     def co_occurrence_features(
         self,
@@ -1474,6 +1534,12 @@ class EntityGraph:
         Returns:
             {value_a: {value_b: {p_ba, lift, co_count, co_won, co_rate_won}}}
         """
+        if outcome_filter and not self._outcome_column:
+            logger.warning(
+                f"outcome_filter='{outcome_filter}' passed but no outcome_column "
+                "was set in build_from_records(). Outcome data will be missing."
+            )
+
         value_entities: dict[str, set[str]] = defaultdict(set)
         entity_outcomes: dict[str, str] = {}
         n_total = len(self._entity_ids)
@@ -1704,11 +1770,25 @@ class EntityGraph:
 
         return x, y
 
-    def save_features(self, path: str) -> None:
-        """Persist feature matrix to JSON for reproducible inference."""
+    def save_features(
+        self,
+        path: str,
+        *,
+        target_columns: list[str] | None = None,
+        k: int = 5,
+    ) -> None:
+        """Persist the FULL feature matrix (including KNN rates + distances).
+
+        Saves the same features that to_ml_dataset() produces, so a model
+        trained on to_ml_dataset() output can be reproduced at inference.
+        """
         import json as json_mod
 
-        features = self.to_feature_dicts()
+        if target_columns:
+            x, _ = self.to_ml_dataset("_dummy_", target_columns=target_columns, k=k)
+            features = x
+        else:
+            features = self.to_feature_dicts()
         with open(path, "w") as f:
             json_mod.dump({"features": features, "entity_count": len(features)}, f)
 

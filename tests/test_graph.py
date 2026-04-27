@@ -283,9 +283,10 @@ class TestKNNRateFeatures:
                 compute_similarity=False,
             )
 
-            recs = kg.recommend("A", ["products"], k=2, min_rate=0.5)
+            result = kg.recommend("A", ["products"], k=2, min_rate=0.5)
             # A has CDN. B and C (peers) have WAF. Should recommend WAF.
-            values = [r["value"] for r in recs]
+            assert result["entity_found"] is True
+            values = [r["value"] for r in result["recommendations"]]
             assert "waf" in values
 
     @pytest.mark.asyncio
