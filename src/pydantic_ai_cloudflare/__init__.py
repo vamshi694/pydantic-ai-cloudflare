@@ -10,7 +10,7 @@ from .data_profiler import DataDictionary, profile_data, profile_data_with_llm
 from .embeddings import CloudflareEmbeddingModel
 from .feature_engine import compute_feature
 from .gateway import GatewayObservability
-from .graph import KnowledgeGraph
+from .graph import EntityGraph, KnowledgeGraph  # KnowledgeGraph is deprecated alias
 from .knowledge import DIYKnowledgeBase, KnowledgeBase
 from .models import list_models, recommend_model
 from .provider import CloudflareProvider, cloudflare_model
@@ -40,8 +40,9 @@ __all__ = [
     # Knowledge base / RAG
     "KnowledgeBase",
     "DIYKnowledgeBase",
-    # Knowledge graph
-    "KnowledgeGraph",
+    # Entity graph (knowledge graph is deprecated alias)
+    "EntityGraph",
+    "KnowledgeGraph",  # backward compat
     "compute_feature",
     "profile_data",
     "profile_data_with_llm",
@@ -58,4 +59,4 @@ __all__ = [
     "extract_json_from_text",
 ]
 
-__version__ = "0.1.5"
+__version__ = "0.1.6"

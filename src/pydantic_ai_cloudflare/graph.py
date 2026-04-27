@@ -122,19 +122,24 @@ def _label_propagation(adj: dict[str, set[str]], max_iter: int = 20) -> dict[str
 
 
 # ============================================================
-# KnowledgeGraph class
+# EntityGraph class
 # ============================================================
 
 
-class KnowledgeGraph:
-    """Knowledge graph for feature engineering and entity analysis.
+class EntityGraph:
+    """Entity graph for peer-adoption features and ML feature engineering.
 
-    Builds a typed graph from tabular data. Computes graph metrics
-    as ML features. Supports similarity search and LLM-powered
-    entity extraction.
+    Builds a bipartite graph from tabular data where entity nodes (rows)
+    connect to feature-value nodes (column values). Also supports direct
+    entity-to-entity relationships via add_relationship().
 
-    No external deps beyond httpx. No networkx, no pandas required.
-    Uses dicts internally, exports to whatever format you need.
+    Core value: finds structurally similar entities by shared feature
+    nodes, then computes peer-adoption rates (knn_rate_*) as ML features.
+    "What do my graph peers have that I don't?" — a signal flat tables miss.
+
+    This is NOT a full knowledge graph with ontologies and inference rules.
+    It's a structured collaborative filter with typed edges, community
+    detection, and co-occurrence lift.
     """
 
     def __init__(
@@ -182,6 +187,7 @@ class KnowledgeGraph:
         columns: list[str],
         *,
         model: str | None = None,
+        min_group_size: int = 2,
     ) -> dict[str, str]:
         """Use LLM to auto-detect and merge entity aliases.
 
@@ -189,10 +195,17 @@ class KnowledgeGraph:
         asks the LLM to group them into canonical forms, and
         updates the internal canonical map.
 
+        CAUTION: The LLM may over-merge distinct entities that share
+        a common prefix (e.g. "Magic WAN" and "Magic Transit" are
+        different products). Review the output before building the graph.
+
         Args:
             records: The dataset (same records you'll pass to build_from_records).
-            columns: Which columns to scan for aliases (e.g. ["tech_stack", "competitors"]).
+            columns: Which columns to scan for aliases.
             model: Override LLM model.
+            min_group_size: Minimum aliases in a group to include (2 = only
+                merge when there are at least 2 variants). Set higher for
+                more conservative merging.
 
         Returns:
             The generated alias map {alias: canonical}.
@@ -238,6 +251,8 @@ class KnowledgeGraph:
                 max_tokens=4096,
             )
             for g in result.groups:
+                if len(g.aliases) < min_group_size:
+                    continue  # skip single-item groups (no real aliases)
                 for alias in g.aliases:
                     full_map[alias.lower().strip()] = g.canonical
 
@@ -289,6 +304,47 @@ class KnowledgeGraph:
         self._adj[tgt].add(src)
         self._features = None
 
+    # -- Entity-to-entity relationships --
+
+    def add_relationship(
+        self,
+        source_entity: str,
+        relationship: str,
+        target_entity: str,
+        *,
+        weight: float = 1.0,
+        confidence: float = 1.0,
+        data: dict[str, Any] | None = None,
+    ) -> None:
+        """Add a direct entity-to-entity relationship.
+
+        This is what makes it more than a bipartite feature graph.
+        Enables multi-hop traversal and causal reasoning.
+
+        Examples:
+            kg.add_relationship("Cisco", "COMPETES_WITH", "Zscaler")
+            kg.add_relationship("Acme Corp", "DISPLACED", "Palo Alto")
+            kg.add_relationship("Account A", "REFERRED_BY", "Account B")
+
+        Args:
+            source_entity: Source entity ID or name.
+            target_entity: Target entity ID or name.
+            relationship: Edge type (e.g. COMPETES_WITH, PARTNERS_WITH).
+            weight: Edge weight.
+            confidence: Confidence score (1.0 = certain, 0.5 = inferred).
+            data: Extra metadata on the edge.
+        """
+        # Resolve or create both entities
+        src = self._resolve_entity(source_entity)
+        if src is None:
+            src = self._add_node("entity", source_entity, data)
+
+        tgt = self._resolve_entity(target_entity)
+        if tgt is None:
+            tgt = self._add_node("entity", target_entity, data)
+
+        self._add_edge(src, tgt, relationship, weight=weight, confidence=confidence)
+
     # -- API helpers --
 
     async def _embed(self, texts: list[str]) -> list[list[float]]:
@@ -335,6 +391,39 @@ class KnowledgeGraph:
                 set(w.lower() for w in re.findall(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b", text))
             )[:10]
 
+    async def _extract_relationships(
+        self,
+        text: str,
+        source_entity: str,
+    ) -> list[dict[str, str]]:
+        """Extract entity-to-entity relationships from text via LLM."""
+        from pydantic import BaseModel as _BM
+
+        class _Rel(_BM):
+            source: str
+            type: str
+            target: str
+
+        class _Rels(_BM):
+            relationships: list[_Rel]
+
+        try:
+            r = await cf_structured(
+                f"Extract relationships from text about {source_entity}. "
+                f"Types: COMPETES_WITH, PARTNERS_WITH, ACQUIRED, DISPLACED, "
+                f"MIGRATED_TO, USES, SUPPLIES.\n\n"
+                f"{text[:2000]}",
+                _Rels,
+                model=self._extraction_model,
+                account_id=self._account_id,
+                api_key=self._api_key,
+                max_tokens=512,
+                retries=1,
+            )
+            return [{"target": rel.target, "type": rel.type} for rel in r.relationships]
+        except Exception:
+            return []
+
     async def _summarize_text(self, text: str, entity_name: str = "") -> str:
         """Summarize a long text column value for an entity."""
         from pydantic import BaseModel
@@ -374,7 +463,9 @@ class KnowledgeGraph:
         categorical_columns: list[str] | None = None,
         numeric_columns: list[str] | None = None,
         list_columns: dict[str, str] | None = None,
+        relationship_columns: dict[str, str] | None = None,
         extract_entities: bool = True,
+        extract_relationships: bool = False,
         compute_similarity: bool = True,
         summarize_text: bool = False,
         similarity_threshold: float = 0.70,
@@ -535,6 +626,24 @@ class KnowledgeGraph:
                 bid = self._add_node(f"{col}_range", bucket)
                 self._add_edge(entity_nid, bid, f"IN_{col.upper()}_RANGE", weight=edge_weight)
 
+            # Relationship columns → direct entity-to-entity edges
+            if relationship_columns:
+                for col, rel_type in relationship_columns.items():
+                    val = str(record.get(col, "")).strip()
+                    if val and val.lower() not in ("", "none", "null", "nan"):
+                        # Each value becomes a target entity with a direct relationship
+                        for item in (x.strip() for x in val.split(",") if x.strip()):
+                            item = self._canonicalize(item)
+                            target_nid = self._add_node("entity", item)
+                            self._add_edge(
+                                entity_nid,
+                                target_nid,
+                                rel_type,
+                                weight=edge_weight,
+                                confidence=conf_map.get(col, 0.9),
+                                outcome=record_outcome,
+                            )
+
             # Text → entity extraction + optional summarization
             for col in text_columns:
                 text = str(record.get(col, ""))
@@ -545,6 +654,20 @@ class KnowledgeGraph:
                     for ent in entities:
                         cid = self._add_node("concept", ent)
                         self._add_edge(entity_nid, cid, "HAS_CONCEPT")
+
+                # LLM relationship extraction from text
+                if extract_relationships:
+                    rels = await self._extract_relationships(text, eid)
+                    for rel in rels:
+                        target_nid = self._add_node("entity", rel["target"])
+                        self._add_edge(
+                            entity_nid,
+                            target_nid,
+                            rel["type"],
+                            weight=0.8,
+                            confidence=0.7,
+                        )
+
                 if summarize_text and len(text) > 500:
                     summary = await self._summarize_text(text, eid)
                     self._nodes[entity_nid]["data"][f"{col}_summary"] = summary
@@ -680,6 +803,9 @@ class KnowledgeGraph:
             f["community_size"] = community_sizes.get(f["community_id"], 0)
 
             # Centrality
+            # NOTE: On bipartite feature graphs, PageRank measures feature-mediated
+            # centrality (how common your feature values are), NOT entity importance.
+            # Use community_id and knn_rate_* for more meaningful ML features.
             f["pagerank"] = pr.get(nid, 0.0)
 
             # Node2Vec embedding features (structural position)
@@ -1666,18 +1792,10 @@ def _node2vec_embeddings(
         )
         return {node: model.wv[node].tolist() for node in nodes if node in model.wv}
     except ImportError:
-        # Fallback: simple hash-based embedding (much worse but no deps)
-        logger.warning("gensim not installed — using hash-based Node2Vec fallback")
-        embeddings: dict[str, list[float]] = {}
-        for node in nodes:
-            # Deterministic pseudo-embedding from walk co-occurrence counts
-            import hashlib
-
-            h = hashlib.sha256(node.encode()).digest()
-            emb = [((b % 200) - 100) / 100.0 for b in h[:dimensions]]
-            norm = math.sqrt(sum(x * x for x in emb)) + 1e-10
-            embeddings[node] = [x / norm for x in emb]
-        return embeddings
+        logger.warning(
+            "gensim not installed — Node2Vec embeddings disabled. Install with: pip install gensim"
+        )
+        return {}  # return empty, don't generate fake embeddings
 
 
 def _build_canonical_lookup(alias_map: dict[str, str]) -> dict[str, str]:
@@ -1690,3 +1808,7 @@ def _build_canonical_lookup(alias_map: dict[str, str]) -> dict[str, str]:
     for alias, canonical in alias_map.items():
         lookup[alias.lower().strip()] = canonical
     return lookup
+
+
+# Backward compatibility alias
+KnowledgeGraph = EntityGraph
