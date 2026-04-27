@@ -530,60 +530,138 @@ How it works:
 
 Build typed knowledge graphs from tabular datasets. Each row becomes an entity, column values become nodes, edges represent real relationships. Then extract graph-derived features for ML.
 
+### Quick start
+
 ```python
 from pydantic_ai_cloudflare import KnowledgeGraph, profile_data
 
-# Auto-profile your dataset (detects column types)
+# 1. Auto-profile (detects column types)
 dd = profile_data(records, id_column="account_id")
-# → industry: categorical, tech_stack: list, description: text, employees: numeric
 
-# Build graph
+# 2. Build graph
 kg = KnowledgeGraph()
 await kg.build_from_records(records, data_dict=dd)
-# 2000 rows → 4321 nodes, 52428 edges, 21 edge types
+# 10,000 rows → 28K nodes, 153K edges in 0.25s
 
-# ML features (feed into XGBoost, LightGBM, sklearn)
+# 3. Get ML features
 features = kg.to_feature_dicts()
-# Per entity: degree, pagerank, clustering_coeff, community_id, knn_distance, ...
-
-# KNN rate features (peer adoption → propensity signals)
-rates = kg.knn_rate_features(["products_owned"], k=5)
-# knn_rate_waf = 0.6 → 3/5 structural peers have WAF
-
-# Recommendations (what graph peers have that you don't)
-recs = kg.recommend("Account A", ["products_owned"], k=5, min_rate=0.5)
-# "3/5 structural peers have 'waf'. Graph found a signal a flat table cannot."
-
-# Co-occurrence (which products are bought together)
-co = kg.co_occurrence_features("products_owned")
-# P(WAF|CDN) = 0.67 → 67% of CDN users also have WAF
-
-# Ask LLM questions over the graph
-answer = await kg.ask("Which accounts are most likely to expand?")
+# 22+ features per entity: degree, pagerank, community, Node2Vec, ...
 ```
 
-**Benchmarks (10,000 accounts):**
+### Auto-canonicalization (LLM-powered)
+
+Collapse entity aliases automatically. "Zscaler/ZS/zscaler inc" → one node.
+
+```python
+# LLM groups aliases in one call
+alias_map = await kg.auto_canonicalize(records, ["tech_stack", "competitors"])
+# → {'ZS': 'Zscaler', 'PAN': 'Palo Alto Networks', 'K8s': 'Kubernetes', ...}
+
+# Or provide manually
+kg = KnowledgeGraph(canonical_map={"ZS": "Zscaler", "PAN": "Palo Alto"})
+```
+
+### Outcome-aware co-occurrence with lift
+
+```python
+# Build with outcome tracking
+await kg.build_from_records(records, data_dict=dd, outcome_column="deal_stage")
+
+# Co-occurrence now includes lift + outcome rates
+co = kg.co_occurrence_features("products_owned", outcome_filter="Won")
+# co["casb"]["waf"] = {
+#     "p_ba": 0.67,        P(WAF|CASB)
+#     "lift": 2.1,         lift > 1.5 = real signal
+#     "co_count": 45,      entities with both
+#     "co_won": 38,        of those, how many won
+#     "co_rate_won": 0.84  P(WAF|CASB, Won) — outcome-conditional
+# }
+```
+
+### Edge confidence tiers
+
+```python
+# Structured fields get high confidence, LLM-extracted get lower
+await kg.build_from_records(records, data_dict=dd,
+    confidence_map={
+        "industry": 1.0,        # CRM field — certain
+        "tech_stack": 0.9,      # comma-separated — reliable
+        "competitors": 0.7,     # LLM-extracted — noisy
+    },
+)
+```
+
+### Temporal decay
+
+```python
+await kg.build_from_records(records, data_dict=dd,
+    temporal_column="created_date", temporal_decay=0.003,
+)
+# Recent records: weight ≈ 0.95. Two-year-old: weight ≈ 0.05. 18x ratio.
+```
+
+### KNN peer adoption (propensity signals)
+
+```python
+rates = kg.knn_rate_features(["products_owned"], k=5)
+# "4/5 of your graph peers have WAF. You don't." → knn_rate_waf = 0.8
+
+recs = kg.recommend("Account A", ["products_owned"], k=5, min_rate=0.5)
+# "Graph found a signal a flat table cannot."
+```
+
+### Custom reference-group features
+
+```python
+from pydantic_ai_cloudflare import compute_feature
+
+# Shared tech with Zero Trust customers
+f = compute_feature(kg, computation="shared_count",
+    node_type="tech_stack", reference_filter={"products": "zero trust"})
+
+# Graph distance to nearest Enterprise customer
+f = compute_feature(kg, computation="distance_to_nearest",
+    reference_filter={"segment": "Enterprise", "stage": "Customer"})
+```
+
+### Export to ML
+
+```python
+# Full (X, y) for sklearn/XGBoost
+X, y = kg.to_ml_dataset("products_owned", target_columns=["products_owned"], k=5)
+# X = {entity: {degree, pagerank, community, knn_rate_waf, knn_rate_casb, ...}}
+# y = {entity: {label_cdn: 1, label_waf: 0, label_casb: 0, ...}}
+
+# Persist for reproducible inference
+kg.save_features("features.json")
+features = KnowledgeGraph.load_features("features.json")
+```
+
+### Benchmarks (10,000 accounts)
 
 | Step | Time | Output |
 |---|---|---|
 | Build graph | 0.25s | 28,705 nodes, 153,642 edges |
 | Louvain communities | <1s | 29 communities |
 | Node2Vec embeddings | ~75s | 32-dim structural embeddings |
-| ML features | 3s | 14 features/entity |
-| KNN (k=5) | ~120s | Distance to 5 nearest neighbors |
-| Temporal decay | built-in | 18x recency boost (recent vs 2yr old) |
+| ML features | 3s | 22+ features/entity |
+| Temporal decay | built-in | 18x recency boost |
 
-**Graph features for ML:**
+### Graph features for ML
 
 | Feature Type | Features | Use Case |
 |---|---|---|
 | Structural | degree, clustering_coeff, unique_neighbors | Account complexity |
-| Community | community_id, community_size | Market segmentation |
+| Community | community_id, community_size (Louvain) | Market segmentation |
 | Centrality | pagerank | Account importance |
+| Node2Vec | n2v_norm, n2v_avg_neighbor_dist | Structural position |
 | KNN Distance | knn_avg_distance, knn_min_distance | Similarity scoring |
 | KNN Rate | knn_rate_{product} per target column | Propensity / upsell |
-| Co-occurrence | P(B\|A) for value pairs | Cross-sell / bundling |
-| Pairwise | shared_neighbors, jaccard, adamic_adar | Match scoring |
+| Co-occurrence | p_ba, lift, co_won, co_rate_won | Cross-sell with outcome awareness |
+| Pairwise | shared_neighbors, jaccard, adamic_adar | Match scoring / dedup |
+| Custom | compute_feature() with any reference group | Any ML use case |
+| Confidence | edge confidence tiers (structured vs LLM-extracted) | Feature reliability |
+| Temporal | edge weight decay by recency | Recency-weighted features |
 
 ---
 
