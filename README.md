@@ -1,24 +1,59 @@
 # pydantic-ai-cloudflare
 
-**The PydanticAI SDK for Cloudflare's AI stack.**
-
-Build Python AI agents with type-safe structured output, web browsing, RAG, conversation persistence, and zero-config observability — entirely on Cloudflare's free tier.
+**The Python toolkit for AI agents, structured output, RAG, and knowledge graphs — powered by Cloudflare.**
 
 [![PyPI](https://img.shields.io/pypi/v/pydantic-ai-cloudflare)](https://pypi.org/project/pydantic-ai-cloudflare/)
 [![Python](https://img.shields.io/pypi/pyversions/pydantic-ai-cloudflare)](https://pypi.org/project/pydantic-ai-cloudflare/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-101%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-153%20passing-brightgreen)](tests/)
 
 ```bash
 pip install pydantic-ai-cloudflare
 ```
 
-```python
-from pydantic_ai_cloudflare import cloudflare_agent
+### What you can do with this library
 
-agent = cloudflare_agent()
-result = agent.run_sync("What is Cloudflare?")
+```python
+# 1. AI agents with structured output (all 6 Workers AI models)
+from pydantic_ai_cloudflare import cf_structured_sync
+result = cf_structured_sync("Analyze this company", MySchema, model="@cf/qwen/qwen3-30b-a3b-fp8")
+
+# 2. Browse the web, extract structured data
+from pydantic_ai_cloudflare import BrowserRunToolset
+tools = BrowserRunToolset()
+data = await tools._extract("https://example.com", "Extract pricing plans")
+
+# 3. RAG in 4 lines (managed or DIY)
+from pydantic_ai_cloudflare import KnowledgeBase
+kb = KnowledgeBase("my-docs")
+answer = await kb.ask("How does caching work?")
+
+# 4. Knowledge graphs for ML feature engineering
+from pydantic_ai_cloudflare import KnowledgeGraph, profile_data
+kg = KnowledgeGraph()
+dd = profile_data(records, id_column="account_id")  # auto-classifies 25 columns
+await kg.build_from_records(records, data_dict=dd)   # 2000 rows → 4321 nodes, 52K edges
+features = kg.to_feature_dicts()                     # 29 ML features per entity
+recs = kg.recommend("Acct A", ["products"])           # peer-based recommendations
+
+# 5. Zero-config observability (every LLM call logged via AI Gateway)
+from pydantic_ai_cloudflare import GatewayObservability
+logs = await GatewayObservability().get_logs()
 ```
+
+### At a glance
+
+| Capability | What it does | Free tier? |
+|-----------|-------------|:---:|
+| **`cf_structured()`** | Complex nested Pydantic schemas → validated output on ALL Workers AI models | Yes |
+| **`BrowserRunToolset`** | Browse, scrape, extract, crawl any website (headless Chrome on edge) | Yes |
+| **`KnowledgeBase`** | Managed RAG with hybrid search + BM25 + reranking | Yes |
+| **`DIYKnowledgeBase`** | Ingest URLs/files/folders → chunk → embed → Vectorize → search + rerank | Yes |
+| **`KnowledgeGraph`** | Build typed graphs from tabular data → ML features + recommendations | Local |
+| **`cloudflare_agent()`** | One-liner PydanticAI agent wired to Workers AI | Yes |
+| **`D1MessageHistory`** | Conversation persistence across sessions | Yes |
+| **`GatewayObservability`** | Auto-logging, cost tracking, analytics for every LLM call | Yes |
+| **`list_models()`** | Browse 9 Workers AI models, get recommendations by task | — |
 
 ---
 
@@ -491,6 +526,56 @@ How it works:
 
 ---
 
+## Knowledge Graph — ML Features from Tabular Data
+
+Build typed knowledge graphs from tabular datasets. Each row becomes an entity, column values become nodes, edges represent real relationships. Then extract graph-derived features for ML.
+
+```python
+from pydantic_ai_cloudflare import KnowledgeGraph, profile_data
+
+# Auto-profile your dataset (detects column types)
+dd = profile_data(records, id_column="account_id")
+# → industry: categorical, tech_stack: list, description: text, employees: numeric
+
+# Build graph
+kg = KnowledgeGraph()
+await kg.build_from_records(records, data_dict=dd)
+# 2000 rows → 4321 nodes, 52428 edges, 21 edge types
+
+# ML features (feed into XGBoost, LightGBM, sklearn)
+features = kg.to_feature_dicts()
+# Per entity: degree, pagerank, clustering_coeff, community_id, knn_distance, ...
+
+# KNN rate features (peer adoption → propensity signals)
+rates = kg.knn_rate_features(["products_owned"], k=5)
+# knn_rate_waf = 0.6 → 3/5 structural peers have WAF
+
+# Recommendations (what graph peers have that you don't)
+recs = kg.recommend("Account A", ["products_owned"], k=5, min_rate=0.5)
+# "3/5 structural peers have 'waf'. Graph found a signal a flat table cannot."
+
+# Co-occurrence (which products are bought together)
+co = kg.co_occurrence_features("products_owned")
+# P(WAF|CDN) = 0.67 → 67% of CDN users also have WAF
+
+# Ask LLM questions over the graph
+answer = await kg.ask("Which accounts are most likely to expand?")
+```
+
+**Graph features for ML:**
+
+| Feature Type | Features | Use Case |
+|---|---|---|
+| Structural | degree, clustering_coeff, unique_neighbors | Account complexity |
+| Community | community_id, community_size | Market segmentation |
+| Centrality | pagerank | Account importance |
+| KNN Distance | knn_avg_distance, knn_min_distance | Similarity scoring |
+| KNN Rate | knn_rate_{product} per target column | Propensity / upsell |
+| Co-occurrence | P(B\|A) for value pairs | Cross-sell / bundling |
+| Pairwise | shared_neighbors, jaccard, adamic_adar | Match scoring |
+
+---
+
 ## Notebooks
 
 | Notebook | What you'll learn | Has outputs? |
@@ -501,6 +586,7 @@ How it works:
 | [04_persistent_chat](notebooks/04_persistent_chat.ipynb) | Multi-session conversations with D1 | Template |
 | [05_code_mode_monty](notebooks/05_code_mode_monty.ipynb) | Parallel tool execution with Monty | Walkthrough |
 | [06_complex_structured_output](notebooks/06_complex_structured_output.ipynb) | `cf_structured()` across all Workers AI models | Yes |
+| [07_knowledge_graph](notebooks/07_knowledge_graph.ipynb) | Build graph from 2000 rows, ML features, KNN rates, recommendations | Yes |
 
 ---
 
