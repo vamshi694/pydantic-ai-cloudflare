@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.1.8 (2026-04-27)
+
+### Fixed (all 11 bugs from team review)
+- **`save_features()`** now saves the full feature pipeline (knn_rate_*, knn distances) when `target_columns` is passed. Models trained on `to_ml_dataset()` can now be reproduced at inference.
+- **`profile_data`** text threshold lowered 80→50 so short descriptions aren't misclassified.
+- **`profile_data`** auto-skips URLs, phone numbers, and UUIDs (regex patterns) instead of making them graph nodes.
+- **`find_similar()`** filters results to only entities from original `build_from_records()` rows — relationship targets (competitors) no longer appear.
+- **`recommend()`** returns a dict with `entity_found`, `peers_found`, `own_values`, and `reason` instead of a silent empty list.
+- **`co_occurrence_features()`** warns when `outcome_filter` is set but `outcome_column` wasn't configured.
+- **`compute_feature()`** is now a method on `EntityGraph` — `kg.compute_feature(...)` works directly.
+- **gensim warning** fires once only, not on every `compute_features()` call.
+- **`explain()`** accepts `min_rate` parameter (was hardcoded 0.2) and includes `recommendation_reason` field.
+- **Phone regex** tightened to require `+/(` prefix — dates like `2018-03-15` no longer match.
+
+## 0.1.7 (2026-04-27)
+
+### Added
+- **`explain(entity_id)`** — traces actual graph paths: community membership, peer shared nodes, per-recommendation evidence, entity-to-entity relationships.
+- **`dd.review()`** — shows profile guesses with ⚠️ flags for uncertain classifications.
+- **Progress logging** — `build_from_records` and `compute_features` log at 10% intervals for large datasets.
+
 ## 0.1.6 (2026-04-27)
 
 ### Changed
