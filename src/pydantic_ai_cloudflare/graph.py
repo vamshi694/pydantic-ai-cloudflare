@@ -176,6 +176,75 @@ class KnowledgeGraph:
         """Resolve aliases to canonical form."""
         return self._canonical_map.get(value.lower().strip(), value)
 
+    async def auto_canonicalize(
+        self,
+        records: list[dict[str, Any]],
+        columns: list[str],
+        *,
+        model: str | None = None,
+    ) -> dict[str, str]:
+        """Use LLM to auto-detect and merge entity aliases.
+
+        Scans the specified columns, collects all unique values,
+        asks the LLM to group them into canonical forms, and
+        updates the internal canonical map.
+
+        Args:
+            records: The dataset (same records you'll pass to build_from_records).
+            columns: Which columns to scan for aliases (e.g. ["tech_stack", "competitors"]).
+            model: Override LLM model.
+
+        Returns:
+            The generated alias map {alias: canonical}.
+        """
+        from pydantic import BaseModel as _BM
+
+        # Collect unique values from list/categorical columns
+        all_values: set[str] = set()
+        for record in records:
+            for col in columns:
+                raw = str(record.get(col, ""))
+                for item in raw.split(","):
+                    item = item.strip()
+                    if item and item.lower() not in ("", "none", "null", "nan"):
+                        all_values.add(item)
+
+        if len(all_values) < 3:
+            return {}
+
+        class _Group(_BM):
+            canonical: str
+            aliases: list[str]
+
+        class _Map(_BM):
+            groups: list[_Group]
+
+        values_list = sorted(all_values)
+        # Batch if too many (LLM context limit)
+        batch_size = 200
+        full_map: dict[str, str] = {}
+
+        for i in range(0, len(values_list), batch_size):
+            batch = values_list[i : i + batch_size]
+            result = await cf_structured(
+                f"Group these entity mentions into canonical forms. "
+                f"Each group has one canonical name and all its aliases/variants. "
+                f"Only group things that are truly the same entity.\n\n"
+                f"Entities: {batch}",
+                _Map,
+                model=model or self._extraction_model,
+                account_id=self._account_id,
+                api_key=self._api_key,
+                max_tokens=4096,
+            )
+            for g in result.groups:
+                for alias in g.aliases:
+                    full_map[alias.lower().strip()] = g.canonical
+
+        # Update internal map
+        self._canonical_map.update(full_map)
+        return full_map
+
     def _nid(self, ntype: str, value: str) -> str:
         return f"{ntype}:{value}".lower().strip()
 
