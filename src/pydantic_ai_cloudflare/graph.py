@@ -528,8 +528,8 @@ class KnowledgeGraph:
         Useful for ML models that predict relationships (link prediction,
         match scoring, propensity models).
         """
-        nid_a = self._nid("entity", entity_a)
-        nid_b = self._nid("entity", entity_b)
+        nid_a = self._resolve_entity(entity_a) or self._nid("entity", entity_a)
+        nid_b = self._resolve_entity(entity_b) or self._nid("entity", entity_b)
 
         neighbors_a = self._adj.get(nid_a, set())
         neighbors_b = self._adj.get(nid_b, set())
@@ -579,6 +579,23 @@ class KnowledgeGraph:
     # Query / Chat
     # ============================================================
 
+    def _resolve_entity(self, identifier: str) -> str | None:
+        """Resolve an entity by ID, label, or data field."""
+        # Direct ID match
+        nid = self._nid("entity", identifier)
+        if nid in self._nodes:
+            return nid
+        # Search by label or data fields
+        for node_id, node in self._nodes.items():
+            if node["type"] != "entity":
+                continue
+            if node["label"].lower() == identifier.lower():
+                return node_id
+            for v in node.get("data", {}).values():
+                if isinstance(v, str) and v.lower() == identifier.lower():
+                    return node_id
+        return None
+
     async def find_similar(
         self,
         entity_id: str,
@@ -587,8 +604,8 @@ class KnowledgeGraph:
         hops: int = 2,
     ) -> list[dict[str, Any]]:
         """Find similar entities via graph traversal + embeddings."""
-        source = self._nid("entity", entity_id)
-        if source not in self._nodes:
+        source = self._resolve_entity(entity_id)
+        if source is None:
             return []
 
         scores: dict[str, float] = defaultdict(float)
@@ -678,8 +695,8 @@ class KnowledgeGraph:
 
     def neighborhood(self, entity_id: str, hops: int = 1) -> dict[str, Any]:
         """Get local subgraph."""
-        src = self._nid("entity", entity_id)
-        if src not in self._nodes:
+        src = self._resolve_entity(entity_id)
+        if src is None:
             return {"nodes": [], "edges": []}
         visited = {src}
         frontier = {src}
