@@ -637,6 +637,138 @@ recs = kg.recommend("Account A", ["products_owned"], k=5, min_rate=0.5)
 # "Graph found a signal a flat table cannot."
 ```
 
+### Point-in-time features (no leakage)
+
+`build_temporal_dataset()` produces feature/label rows where the features at
+each snapshot date use ONLY records from on or before that date. Eliminates the
+silent training-time leakage that flat-graph builds suffer from.
+
+```python
+from pydantic_ai_cloudflare import build_temporal_dataset
+
+X, y = await build_temporal_dataset(
+    records,
+    id_column="account_id",
+    time_column="event_date",
+    snapshot_dates=["2023-01-01", "2023-04-01", "2023-07-01"],
+    label_column="purchased_casb_at",
+    label_horizon_days=180,
+    target_columns=["products_owned"],
+    feature_kwargs={
+        "categorical_columns": ["industry", "geo"],
+        "list_columns": {"tech": "USES_TECH", "products": "HAS_PRODUCT"},
+        "extract_entities": False,
+    },
+)
+# X[i] = {"entity": "Acme", "snapshot_date": "2023-01-01", **features}
+# y[i] = {"entity": "Acme", "snapshot_date": "2023-01-01", "label": 1}
+```
+
+Or for a single snapshot:
+
+```python
+kg = EntityGraph()
+await kg.build_from_records(
+    records,
+    time_column="event_date",
+    as_of="2024-01-31",   # only records on/before this date
+    ...
+)
+print(kg._snapshot_date)   # 2024-01-31T00:00:00
+```
+
+### Freeze for production scoring (no feature drift)
+
+Train a model on a snapshot, freeze the graph, then score new records using
+the SAME topology — guaranteed no feature drift between training and inference.
+
+```python
+# Train: build, freeze, save features for the model
+await kg.build_from_records(records, time_column="created", as_of="2024-04-01", ...)
+kg.freeze(target_columns=["products_owned"], k=5)
+X, y = kg.to_ml_dataset("products_owned", target_columns=["products_owned"], k=5)
+# train your model on (X, y) ...
+kg.save_features("snapshot_2024_04_01.json", target_columns=["products_owned"], k=5)
+
+# Score: load features, freeze, score new records
+features = await kg.score_one(new_record)
+# Uses frozen peers, frozen target-value catalog
+# {"degree": 5, "knn_rate_waf": 0.8, "knn_avg_distance": 0.31, ...}
+
+# add_records() now raises — must unfreeze() to mutate
+await kg.score_batch([rec1, rec2, rec3])  # ← parallel-friendly inference
+```
+
+### Sentinel-zero filter & IDF similarity (auto-correctness)
+
+Numeric columns where 0 means "missing" (propensity scores, deal counts, etc.)
+no longer dominate similarity. Detected automatically at build time and
+excluded from the graph.
+
+```python
+# Auto-detection (default): warns at build time, excludes 0s
+await kg.build_from_records(records, numeric_columns=["propensity_score", "arr"])
+# WARNING: 'propensity_score': 4/6 (67%) values are 0. Treating 0 as missing.
+
+# Manual control
+await kg.build_from_records(
+    records,
+    sentinel_zero_columns=["propensity_score"],   # explicit
+    auto_detect_sentinels=False,
+)
+```
+
+`find_similar()` also automatically downweights paths through hub feature nodes
+using inverse-frequency (`use_idf=True`, default). A feature node connected to
+170 entities now contributes ~0.19× weight; a rare one connected to 3 entities
+contributes ~0.91×. No more manual `edge_type_weights` for the common case.
+
+```python
+# Default — IDF + multi-path scoring + sentinel-aware
+similar = await kg.find_similar("AcmeCorp", top_k=5)
+for s in similar:
+    print(s["entity"], s["score"], s["via"])
+# AcmeCorp's via list now shows ALL shared features:
+# ['HAS_INDUSTRY:SaaS', 'HAS_PRODUCT:CDN', 'HAS_PRODUCT:WAF',
+#  'USES_TECH:AWS', 'USES_TECH:K8s']
+```
+
+### Build-time profiling & feature_report()
+
+```python
+await kg.build_from_records(records, ...)
+kg.compute_features()
+kg.print_report()
+```
+
+```
+EntityGraph report
+  Snapshot date:   2024-01-31
+  Frozen:          False
+  Entities:        300
+  Total nodes:     1842
+  Total edges:     5104
+  Communities:     27
+  Features/entity: 49
+
+Features generated:
+  structural     (  9) ['degree', 'unique_neighbors', ...]
+  community      (  2) ['community_id', 'community_size']
+  centrality     (  1) ['pagerank']
+  embedding      (  2) ['n2v_avg_neighbor_dist', 'n2v_norm']
+  knn_distance   (  3) ['knn_avg_distance', 'knn_min_distance', ...]
+  knn_rate       ( 32) ['knn_rate_cdn', 'knn_rate_waf', ...]
+
+PageRank caveat:
+  PageRank is computed on the bipartite graph and measures
+  feature-mediated centrality, not entity importance.
+
+Warnings:
+  - Numeric column 'propensity_score': 170/300 (57%) values are 0.
+    Treating 0 as missing (excluded from graph).
+  - Categorical column 'segment': 60% null/sentinel.
+```
+
 ### Custom reference-group features
 
 ```python
@@ -663,6 +795,41 @@ X, y = kg.to_ml_dataset("products_owned", target_columns=["products_owned"], k=5
 kg.save_features("features.json")
 features = EntityGraph.load_features("features.json")
 ```
+
+### Visualization (zero-dependency)
+
+Render any EntityGraph to interactive HTML, Cytoscape.js JSON, D3 force-graph
+JSON, Mermaid (for docs), or GraphML (for Gephi/yEd). Color-coded by community
+or node type; edges colored by relationship type.
+
+```python
+# Interactive HTML — open in any browser, draggable + zoomable
+kg.render_html("graph.html", color_by="community", max_nodes=300)
+# Self-contained — Cytoscape.js loaded from CDN, no Python deps to install.
+
+# Subgraph around one entity (its 2-hop neighborhood)
+kg.render_html("acme_neighborhood.html", focus="AcmeCorp", hops=2)
+
+# Cytoscape.js JSON for embedding in your own web UI
+spec = kg.to_cytoscape(color_by="community")
+# {"nodes": [...], "edges": [...], "metadata": {legend: [...], ...}}
+
+# Mermaid for Markdown / GitLab / Confluence (great for docs)
+print(kg.to_mermaid(max_nodes=30))
+
+# GraphML for Gephi or yEd
+kg.to_graphml("graph.graphml")
+```
+
+Color modes:
+- `color_by="community"` — distinct color per Louvain community (default if
+  computed)
+- `color_by="type"` — entity=blue, concept=green, list=orange, range=gray
+- `color_by="industry"` (or any column) — color entities by their value of
+  that column
+
+Layout options for HTML: `"cose"` (force, default), `"concentric"`,
+`"breadthfirst"`, `"grid"`, `"circle"`. Switch on the fly via the side panel.
 
 ### Benchmarks (10,000 accounts)
 
@@ -729,8 +896,8 @@ features = EntityGraph.load_features("features.json")
 ## Roadmap
 
 - [x] **v0.1.0** — Provider, Browser Run, Embeddings, Vectorize, D1, Gateway, Model Catalog, Schema Utils
-- [ ] **v0.2.0** — VCR cassette integration tests, AI Search (AutoRAG) support
-- [ ] **v0.3.0** — Upstream CloudflareProvider to `pydantic/pydantic-ai`
+- [x] **v0.2.0** — Production correctness for EntityGraph (IDF, sentinel filter, point-in-time, freeze/score, parallel LLM), built-in visualization (HTML, Cytoscape, Mermaid, GraphML), build-time profiling, feature_report()
+- [ ] **v0.3.0** — Upstream CloudflareProvider to `pydantic/pydantic-ai`, VCR cassette integration tests
 - [ ] **v1.0.0** — Stable API, full docs site, PyPI release
 
 ## Contributing

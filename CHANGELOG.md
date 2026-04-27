@@ -2,6 +2,53 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.0 (2026-04-27)
+
+A correctness + visualization release driven by real testing on customer data.
+Focused on the EntityGraph: making it trustworthy for production ML and useful
+for LLM-driven exploration. No GNN, no triple stores — just the same utility
+library, made robust.
+
+### Fixed (production correctness from CF1 testing)
+- **`find_similar()` no longer dominated by hub features.** New `use_idf=True` (default) discounts paths through hub feature nodes using `1/log(degree+1)`. Sentinel-zero columns (e.g. `propensity_score=0` connecting 170 accounts) no longer drive fake similarity. Works automatically — no more manual `edge_type_weights` for the common case.
+- **Multi-path similarity.** `find_similar()` now accumulates score across every distinct path source→feature→target, instead of stopping after the first path. The `via` list now shows ALL shared features (industry, AWS, K8s, CDN, WAF), not just the first.
+- **Sentinel-zero numeric columns auto-detected.** When a numeric column has ≥30% zero values (configurable via `sentinel_zero_rate`), zeros are treated as missing and excluded from the graph. User can override with `sentinel_zero_columns=[]`. Catches the `propensity_score=0` footgun before it pollutes features.
+- **`co_occurrence_features()` `min_support` parameter** (default 5). Pairs with co_count below this threshold are dropped. Prevents statistically fragile lift scores driven by 1-2 accounts. Pass `min_support=1` for legacy behavior.
+- **`explain()` shared_nodes labels resolve correctly.** Now shows `propensity_score=zero` instead of bare `'zero'`. Range nodes filtered by default (`include_range_nodes=False`); set True to keep them. Output is finally human-presentable.
+- **`save_features()` warns when target_columns are missing** but `knn_rate_*` features were computed earlier in the session. Catches the silent "saved 16 instead of 49 features" bug. Saved JSON now includes `snapshot_date`, `target_columns`, `k`, and `build_meta` for reproducibility.
+
+### Added (point-in-time, freeze, viz)
+- **Point-in-time features (`time_column` + `as_of`).** No more training-time data leakage. `kg.build_from_records(records, time_column='created_at', as_of='2024-01-31')` only includes records on/before the cutoff. Snapshot date is persisted in `kg._snapshot_date` and saved with features.
+- **`build_temporal_dataset()`** module-level helper. Build a leakage-free training set across multiple snapshot dates with forward-window labels:
+  ```python
+  X, y = await build_temporal_dataset(
+      records, id_column='account_id', time_column='event_date',
+      snapshot_dates=['2023-01-01', '2023-04-01', '2023-07-01'],
+      label_column='purchased_casb_at', label_horizon_days=180,
+      target_columns=['products_owned'],
+  )
+  ```
+- **`freeze()` + `score_one()` + `score_batch()`.** Lock the graph topology after training and score new records without mutating any state — `add_records()` raises after freeze. Eliminates "feature drift" between training and inference. The frozen graph caches communities, peer-assignment rules, and target-value catalog so scoring uses exactly the same topology that produced the training features.
+- **Parallel LLM extraction** in `build_from_records()`. New `llm_concurrency` parameter (default 8) batches all `extract_entities` / `extract_relationships` / `summarize_text` jobs through `asyncio.gather` + Semaphore. 300 records went from ~30 minutes sequential to ~3 minutes concurrent.
+- **Build-time profiling.** New `profile=True` (default) flags low-cardinality, high-null, and other footgun columns at build time. Surfaced via `kg._build_warnings` and `feature_report()`.
+- **`feature_report()` and `print_report()`.** Self-describing summary of what the graph contains, which features were generated, what warnings were raised, and whether PageRank is meaningful here. Helps users debug their build instead of staring at silent feature drift.
+- **`compute_features(community_method='entity_projection')`.** New default community method projects the bipartite graph onto entity-only space (Adamic-Adar weighted) before running Louvain. Produces ~25 communities on 300 entities instead of ~5 from naive bipartite Louvain. Pass `'bipartite'` for the legacy behavior.
+
+### Added (visualization — `GraphVisualizer`)
+- **Interactive HTML rendering.** `kg.render_html('graph.html', color_by='community')` produces a self-contained HTML file (Cytoscape.js via CDN, zero local deps) with pan/zoom/drag, search, layout switching, info panel on click, and a community-color legend.
+- **Cytoscape.js JSON export.** `kg.to_cytoscape()` returns embeddable JSON for any web frontend.
+- **D3.js force-graph JSON.** `kg.to_d3_json()`.
+- **Mermaid flowchart.** `kg.to_mermaid()` for documentation, GitLab/Confluence/notebooks.
+- **GraphML XML.** `kg.to_graphml('graph.graphml')` for Gephi or yEd.
+- **Color coding.** `color_by='community'` (default if computed), `'type'`, or any entity-data column name. Edge types are color-coded too: SIMILAR_TO dashed, entity-to-entity (COMPETES_WITH etc.) red, feature edges muted gray. Edge width ∝ weight.
+- **Subgraph selection.** `max_nodes`, `focus`, `hops`, `include_node_types`, `exclude_node_types` for rendering manageable subgraphs of large graphs.
+
+### Changed
+- `EntityGraph.__init__` now stores `_build_meta` capturing the column logic from `build_from_records()`. This is what makes `score_one()` reproducible.
+- `EntityGraph` now exposes `is_frozen`, `unfreeze()`.
+- `min_support=5` is the new default for `co_occurrence_features` (was unbounded). Pass `min_support=1` if you really want every pair.
+- Public API exports: `EntityGraph`, `KnowledgeGraph` (alias), `build_temporal_dataset`, `GraphVisualizer`.
+
 ## 0.1.9 (2026-04-27)
 
 ### Fixed (from production usage feedback)

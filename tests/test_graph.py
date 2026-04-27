@@ -308,7 +308,8 @@ class TestKNNRateFeatures:
                 compute_similarity=False,
             )
 
-            co = kg.co_occurrence_features("products")
+            # min_support=1 to allow tiny 4-record dataset
+            co = kg.co_occurrence_features("products", min_support=1)
             # P(WAF|CDN): A,B,C have CDN. A,B have WAF. → 2/3 = 0.667
             assert co["cdn"]["waf"]["p_ba"] > 0.5
             assert co["cdn"]["waf"]["lift"] > 0  # lift should be computed
