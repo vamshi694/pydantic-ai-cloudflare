@@ -210,3 +210,55 @@ class TestQuery:
             hood = kg.neighborhood("A", hops=1)
             assert len(hood["nodes"]) > 1
             assert len(hood["edges"]) > 0
+
+
+class TestKNN:
+    @pytest.mark.asyncio
+    async def test_knn_graph_metric(self) -> None:
+        with patch.dict(os.environ, {"CLOUDFLARE_ACCOUNT_ID": "a", "CLOUDFLARE_API_TOKEN": "t"}):
+            kg = KnowledgeGraph()
+            await kg.build_from_records(
+                SAMPLE_RECORDS,
+                id_column="id",
+                categorical_columns=["industry"],
+                list_columns={"tech": "USES_TECH"},
+                text_columns=[],
+                extract_entities=False,
+                compute_similarity=False,
+            )
+
+            knn = kg.knn_features(k=2, metric="graph")
+            assert "A" in knn
+            assert len(knn["A"]["knn_entities"]) <= 2
+            assert "knn_avg_distance" in knn["A"]
+            assert "knn_min_distance" in knn["A"]
+            # B should be nearest to A (shared SaaS + AWS)
+            assert knn["A"]["knn_entities"][0] == "B"
+
+
+class TestAddRecords:
+    @pytest.mark.asyncio
+    async def test_incremental_add(self) -> None:
+        with patch.dict(os.environ, {"CLOUDFLARE_ACCOUNT_ID": "a", "CLOUDFLARE_API_TOKEN": "t"}):
+            kg = KnowledgeGraph()
+            await kg.build_from_records(
+                SAMPLE_RECORDS[:2],
+                id_column="id",
+                categorical_columns=["industry"],
+                text_columns=[],
+                extract_entities=False,
+                compute_similarity=False,
+            )
+            initial_nodes = len(kg._nodes)
+
+            # Add a new record
+            await kg.add_records(
+                [SAMPLE_RECORDS[2]],
+                id_column="id",
+                categorical_columns=["industry"],
+                text_columns=[],
+                extract_entities=False,
+                compute_similarity=False,
+            )
+            assert len(kg._nodes) > initial_nodes
+            assert "entity:c" in kg._nodes

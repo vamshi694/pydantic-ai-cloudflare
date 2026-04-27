@@ -706,6 +706,242 @@ class KnowledgeGraph:
             frontier = nxt
         return {"nodes": nodes, "edges": edges}
 
+    # ============================================================
+    # Incremental updates
+    # ============================================================
+
+    async def add_records(
+        self,
+        records: list[dict[str, Any]],
+        **kwargs: Any,
+    ) -> dict[str, int]:
+        """Add new records to an existing graph.
+
+        Same args as build_from_records. New nodes/edges are added,
+        existing ones are updated. Recomputes similarity edges for
+        new entities against all existing ones.
+
+        Features are invalidated and recomputed on next access.
+        """
+        # Invalidate cached features
+        self._features = None
+        self._communities = None
+
+        # Just call build — _add_node and _add_edge are idempotent
+        return await self.build_from_records(records, **kwargs)
+
+    # ============================================================
+    # KNN features
+    # ============================================================
+
+    def knn_features(
+        self,
+        k: int = 5,
+        metric: str = "embedding",
+    ) -> dict[str, dict[str, Any]]:
+        """Compute K-nearest-neighbor features for every entity.
+
+        For each entity, finds K nearest neighbors and returns:
+        - knn_entities: list of K nearest entity IDs
+        - knn_distances: list of K distances (1 - similarity)
+        - knn_avg_distance: mean distance to K neighbors
+        - knn_min_distance: distance to nearest neighbor
+        - knn_max_distance: distance to K-th neighbor
+
+        Args:
+            k: Number of neighbors.
+            metric: "embedding" (cosine) or "graph" (path-based).
+
+        Returns:
+            {entity_id: {knn features}} for all entities.
+        """
+        results: dict[str, dict[str, Any]] = {}
+
+        entity_nids = [n for n in self._entity_ids if n in self._nodes]
+
+        if metric == "embedding":
+            for nid in entity_nids:
+                emb = self._embeddings.get(nid)
+                if not emb:
+                    label = self._nodes[nid]["label"]
+                    results[label] = {
+                        "knn_entities": [],
+                        "knn_distances": [],
+                        "knn_avg_distance": 1.0,
+                        "knn_min_distance": 1.0,
+                        "knn_max_distance": 1.0,
+                    }
+                    continue
+
+                # Compute distances to all other entities
+                dists: list[tuple[str, float]] = []
+                for other_nid in entity_nids:
+                    if other_nid == nid:
+                        continue
+                    other_emb = self._embeddings.get(other_nid)
+                    if other_emb:
+                        sim = _cosine_sim(emb, other_emb)
+                        dists.append((other_nid, 1.0 - sim))  # distance = 1 - similarity
+
+                # Sort by distance, take top K
+                dists.sort(key=lambda x: x[1])
+                top_k = dists[:k]
+
+                label = self._nodes[nid]["label"]
+                knn_labels = [self._nodes[n]["label"] for n, _ in top_k]
+                knn_dists = [d for _, d in top_k]
+
+                results[label] = {
+                    "knn_entities": knn_labels,
+                    "knn_distances": [round(d, 4) for d in knn_dists],
+                    "knn_avg_distance": round(sum(knn_dists) / len(knn_dists), 4)
+                    if knn_dists
+                    else 1.0,
+                    "knn_min_distance": round(knn_dists[0], 4) if knn_dists else 1.0,
+                    "knn_max_distance": round(knn_dists[-1], 4) if knn_dists else 1.0,
+                }
+
+        elif metric == "graph":
+            # Graph-based KNN: use shared neighbor count as proximity
+            for nid in entity_nids:
+                neighbors = self._adj.get(nid, set())
+                dists: list[tuple[str, float]] = []
+                for other_nid in entity_nids:
+                    if other_nid == nid:
+                        continue
+                    other_neighbors = self._adj.get(other_nid, set())
+                    shared = len(neighbors & other_neighbors)
+                    union = len(neighbors | other_neighbors)
+                    dist = 1.0 - (shared / union if union else 0.0)
+                    dists.append((other_nid, dist))
+
+                dists.sort(key=lambda x: x[1])
+                top_k = dists[:k]
+
+                label = self._nodes[nid]["label"]
+                knn_labels = [self._nodes[n]["label"] for n, _ in top_k]
+                knn_dists = [d for _, d in top_k]
+
+                results[label] = {
+                    "knn_entities": knn_labels,
+                    "knn_distances": [round(d, 4) for d in knn_dists],
+                    "knn_avg_distance": round(sum(knn_dists) / len(knn_dists), 4)
+                    if knn_dists
+                    else 1.0,
+                    "knn_min_distance": round(knn_dists[0], 4) if knn_dists else 1.0,
+                    "knn_max_distance": round(knn_dists[-1], 4) if knn_dists else 1.0,
+                }
+
+        return results
+
+    # ============================================================
+    # LLM queries over the graph
+    # ============================================================
+
+    async def ask(
+        self,
+        question: str,
+        *,
+        context_entities: int = 10,
+        include_features: bool = True,
+        include_connections: bool = True,
+        model: str | None = None,
+    ) -> str:
+        """Ask an LLM a question using the graph as context.
+
+        Gathers relevant graph context (entities, features, connections)
+        and feeds it to the LLM along with the question.
+
+        Args:
+            question: Natural language question about the data.
+            context_entities: Max entities to include as context.
+            include_features: Include computed graph features.
+            include_connections: Include edge/neighbor info.
+            model: Override LLM model.
+
+        Returns:
+            LLM-generated answer grounded in graph data.
+        """
+        # Build context from graph
+        context_parts: list[str] = []
+
+        # Get entities sorted by pagerank (most important first)
+        features = self.compute_features()
+        sorted_entities = sorted(
+            features.items(),
+            key=lambda x: x[1].get("pagerank", 0),
+            reverse=True,
+        )[:context_entities]
+
+        for entity_id, feats in sorted_entities:
+            nid = self._nid("entity", entity_id)
+            node = self._nodes.get(nid, {})
+            data = node.get("data", {})
+
+            parts = [f"Entity: {entity_id}"]
+
+            # Add original data fields
+            for k, v in data.items():
+                if isinstance(v, str) and len(v) > 200:
+                    # Use summary if available
+                    summary_key = f"{k}_summary"
+                    if summary_key in data:
+                        parts.append(f"  {k}: {data[summary_key]}")
+                    else:
+                        parts.append(f"  {k}: {str(v)[:200]}...")
+                else:
+                    parts.append(f"  {k}: {v}")
+
+            if include_features:
+                parts.append(
+                    f"  Graph features: degree={feats.get('degree', 0)}, "
+                    f"community={feats.get('community_id', '?')}, "
+                    f"pagerank={feats.get('pagerank', 0):.4f}, "
+                    f"clustering={feats.get('clustering_coeff', 0):.2f}"
+                )
+
+            if include_connections:
+                edges = self._typed_adj.get(nid, [])
+                connections: list[str] = []
+                for e in edges[:10]:  # limit to avoid token explosion
+                    tgt = self._nodes.get(e["target"], {})
+                    connections.append(f"{e['type']}→{tgt.get('label', e['target'])}")
+                if connections:
+                    parts.append(f"  Connections: {', '.join(connections)}")
+
+            context_parts.append("\n".join(parts))
+
+        graph_context = "\n\n".join(context_parts)
+        stats = self.stats
+
+        prompt = (
+            f"You have access to a knowledge graph with {stats['entities']} entities, "
+            f"{stats['total_edges']} edges, and {stats.get('communities', '?')} communities.\n\n"
+            f"Graph data:\n\n{graph_context}\n\n"
+            f"Question: {question}\n\n"
+            f"Answer based on the graph data above. Be specific and cite entities."
+        )
+
+        from pydantic import BaseModel
+
+        from .structured import cf_structured
+
+        class Answer(BaseModel):
+            answer: str
+            entities_referenced: list[str]
+            confidence: str
+
+        result = await cf_structured(
+            prompt,
+            Answer,
+            model=model or self._extraction_model,
+            account_id=self._account_id,
+            api_key=self._api_key,
+            max_tokens=4096,
+        )
+
+        return result.answer
+
     @property
     def stats(self) -> dict[str, Any]:
         nt = defaultdict(int)
