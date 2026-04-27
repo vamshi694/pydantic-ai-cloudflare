@@ -497,7 +497,7 @@ How it works:
 |----------|------------------|:---:|
 | [01_getting_started](notebooks/01_getting_started.ipynb) | First agent, structured output, model discovery | Yes |
 | [02_web_research](notebooks/02_web_research.ipynb) | Browse, extract, discover links, scrape | Yes |
-| [03_rag_pipeline](notebooks/03_rag_pipeline.ipynb) | Crawl → embed → store → query with Vectorize | Template |
+| [03_rag_pipeline](notebooks/03_rag_pipeline.ipynb) | KnowledgeBase (managed) + DIYKnowledgeBase (chunking, embedding, reranking) | Partial |
 | [04_persistent_chat](notebooks/04_persistent_chat.ipynb) | Multi-session conversations with D1 | Template |
 | [05_code_mode_monty](notebooks/05_code_mode_monty.ipynb) | Parallel tool execution with Monty | Walkthrough |
 | [06_complex_structured_output](notebooks/06_complex_structured_output.ipynb) | `cf_structured()` across all Workers AI models | Yes |
