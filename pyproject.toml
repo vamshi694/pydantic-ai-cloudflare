@@ -1,6 +1,6 @@
 [project]
 name = "pydantic-ai-cloudflare"
-version = "0.1.1"
+version = "0.1.2"
 description = "PydanticAI integration for Cloudflare's AI stack — Workers AI, Browser Run, Vectorize, D1, AI Gateway"
 readme = "README.md"
 license = "MIT"
