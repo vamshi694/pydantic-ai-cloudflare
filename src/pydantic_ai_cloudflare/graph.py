@@ -281,6 +281,8 @@ class KnowledgeGraph:
         compute_similarity: bool = True,
         summarize_text: bool = False,
         similarity_threshold: float = 0.70,
+        temporal_column: str | None = None,
+        temporal_decay: float = 0.0,
     ) -> dict[str, int]:
         """Build graph from tabular records.
 
@@ -300,6 +302,9 @@ class KnowledgeGraph:
             compute_similarity: Add SIMILAR_TO edges from embeddings.
             summarize_text: Summarize long text columns per entity (slow but useful).
             similarity_threshold: Min cosine sim for SIMILAR_TO edges.
+            temporal_column: Date column for temporal decay (e.g. "created_date").
+            temporal_decay: Decay rate λ. Edge weight = exp(-λ × days_ago).
+                0 = no decay (default), 0.01 = gradual, 0.1 = aggressive.
         """
         if not records:
             return {"nodes": 0, "edges": 0}
@@ -346,19 +351,47 @@ class KnowledgeGraph:
             entity_nid = self._add_node("entity", eid, row_data)
             self._entity_ids.append(entity_nid)
 
+            # Compute temporal decay weight for this record
+            edge_weight = 1.0
+            if temporal_column and temporal_decay > 0:
+                date_val = record.get(temporal_column)
+                if date_val:
+                    try:
+                        from datetime import datetime
+
+                        if isinstance(date_val, str):
+                            # Parse common date formats
+                            for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%m/%d/%Y"):
+                                try:
+                                    dt = datetime.strptime(date_val, fmt)
+                                    break
+                                except ValueError:
+                                    continue
+                            else:
+                                dt = None
+                        else:
+                            dt = None
+
+                        if dt:
+                            now = datetime.now()
+                            days_ago = (now - dt).days
+                            edge_weight = math.exp(-temporal_decay * max(days_ago, 0))
+                    except Exception:
+                        pass
+
             # Categorical → feature nodes
             for col in categorical_columns:
                 val = str(record.get(col, "")).strip()
                 if val and val.lower() not in ("", "none", "null", "nan", "unknown"):
                     fid = self._add_node(col, val)
-                    self._add_edge(entity_nid, fid, f"HAS_{col.upper()}")
+                    self._add_edge(entity_nid, fid, f"HAS_{col.upper()}", weight=edge_weight)
 
             # List columns → split on comma
             for col, etype in list_columns.items():
                 val = str(record.get(col, ""))
                 for item in (x.strip() for x in val.split(",") if x.strip()):
                     iid = self._add_node(col, item)
-                    self._add_edge(entity_nid, iid, etype)
+                    self._add_edge(entity_nid, iid, etype, weight=edge_weight)
 
             # Numeric → bucketed ranges
             for col in numeric_columns:
@@ -378,7 +411,7 @@ class KnowledgeGraph:
                     continue
                 bucket = _bucket_number(num)
                 bid = self._add_node(f"{col}_range", bucket)
-                self._add_edge(entity_nid, bid, f"IN_{col.upper()}_RANGE")
+                self._add_edge(entity_nid, bid, f"IN_{col.upper()}_RANGE", weight=edge_weight)
 
             # Text → entity extraction + optional summarization
             for col in text_columns:
@@ -461,15 +494,24 @@ class KnowledgeGraph:
 
         features: dict[str, dict[str, Any]] = {}
 
-        # Community detection
-        self._communities = _label_propagation(self._adj)
+        # Community detection (Louvain if networkx available, else label prop)
+        self._communities = _louvain_communities(self._adj)
         community_sizes: dict[int, int] = defaultdict(int)
         for nid in self._entity_ids:
             cid = self._communities.get(nid, -1)
             community_sizes[cid] += 1
 
-        # PageRank (power iteration, simplified)
+        # PageRank
         pr = _pagerank(self._adj, iterations=20)
+
+        # Node2Vec graph embeddings (structural position features)
+        n2v = _node2vec_embeddings(
+            self._adj,
+            dimensions=32,
+            walk_length=10,
+            num_walks=5,
+        )
+        self._graph_embeddings = n2v
 
         for nid in self._entity_ids:
             f: dict[str, Any] = {}
@@ -516,6 +558,19 @@ class KnowledgeGraph:
 
             # Centrality
             f["pagerank"] = pr.get(nid, 0.0)
+
+            # Node2Vec embedding features (structural position)
+            n2v_emb = n2v.get(nid)
+            if n2v_emb:
+                # Average distance to entity neighbors in embedding space
+                n2v_dists = []
+                for en in entity_neighbors:
+                    en_emb = n2v.get(en)
+                    if en_emb:
+                        n2v_dists.append(1.0 - _cosine_sim(n2v_emb, en_emb))
+                f["n2v_avg_neighbor_dist"] = sum(n2v_dists) / len(n2v_dists) if n2v_dists else 1.0
+                # Embedding norm (how "central" in the structural space)
+                f["n2v_norm"] = math.sqrt(sum(x * x for x in n2v_emb))
 
             features[label] = f
 
@@ -1247,3 +1302,156 @@ def _pagerank(
             new_pr[node] = rank
         pr = new_pr
     return pr
+
+
+def _louvain_communities(adj: dict[str, set[str]]) -> dict[str, int]:
+    """Louvain community detection via networkx (much better than label prop)."""
+    try:
+        import networkx as nx
+
+        G = nx.Graph()
+        for node, neighbors in adj.items():
+            for n in neighbors:
+                G.add_edge(node, n)
+
+        if len(G) == 0:
+            return {}
+
+        communities = nx.community.louvain_communities(G, seed=42)
+        result = {}
+        for cid, members in enumerate(communities):
+            for m in members:
+                result[m] = cid
+        return result
+    except ImportError:
+        # Fallback to label propagation if networkx not installed
+        return _label_propagation(adj)
+
+
+def _node2vec_embeddings(
+    adj: dict[str, set[str]],
+    dimensions: int = 64,
+    walk_length: int = 20,
+    num_walks: int = 10,
+    p: float = 1.0,
+    q: float = 2.0,
+    window: int = 5,
+) -> dict[str, list[float]]:
+    """Node2Vec embeddings via biased random walks + co-occurrence SVD.
+
+    Pure Python implementation — no gensim, no torch.
+    Uses biased random walks (controlled by p, q parameters)
+    then builds a co-occurrence matrix and reduces with SVD.
+
+    Args:
+        adj: Undirected adjacency dict.
+        dimensions: Embedding dimensionality.
+        walk_length: Length of each random walk.
+        num_walks: Walks per node.
+        p: Return parameter (1/p = probability of returning to previous node).
+        q: In-out parameter (1/q = probability of moving away from previous node).
+        window: Context window for co-occurrence.
+
+    Returns:
+        {node_id: embedding_vector} for all nodes.
+    """
+    import random as _random
+
+    _random.seed(42)
+    nodes = list(adj.keys())
+    if not nodes:
+        return {}
+
+    node_to_idx = {n: i for i, n in enumerate(nodes)}
+    n = len(nodes)
+
+    # Biased random walks
+    all_walks: list[list[int]] = []
+    for _ in range(num_walks):
+        _random.shuffle(nodes)
+        for node in nodes:
+            walk = [node_to_idx[node]]
+            current = node
+            prev = None
+
+            for _ in range(walk_length - 1):
+                neighbors = list(adj.get(current, set()))
+                if not neighbors:
+                    break
+
+                if prev is None:
+                    # First step: uniform
+                    nxt = _random.choice(neighbors)
+                else:
+                    # Biased: compute weights based on p, q
+                    weights = []
+                    prev_neighbors = adj.get(prev, set())
+                    for nb in neighbors:
+                        if nb == prev:
+                            weights.append(1.0 / p)  # return to previous
+                        elif nb in prev_neighbors:
+                            weights.append(1.0)  # neighbor of previous (BFS-like)
+                        else:
+                            weights.append(1.0 / q)  # move away (DFS-like)
+
+                    total = sum(weights)
+                    if total == 0:
+                        nxt = _random.choice(neighbors)
+                    else:
+                        probs = [w / total for w in weights]
+                        r = _random.random()
+                        cumulative = 0.0
+                        nxt = neighbors[-1]
+                        for nb, prob in zip(neighbors, probs):
+                            cumulative += prob
+                            if r <= cumulative:
+                                nxt = nb
+                                break
+
+                prev = current
+                current = nxt
+                walk.append(node_to_idx[current])
+
+            all_walks.append(walk)
+
+    # Build co-occurrence matrix from walks
+    cooc = [[0.0] * n for _ in range(n)]
+    for walk in all_walks:
+        for i, center in enumerate(walk):
+            start = max(0, i - window)
+            end = min(len(walk), i + window + 1)
+            for j in range(start, end):
+                if i != j:
+                    cooc[center][walk[j]] += 1.0
+
+    # Simple dimensionality reduction via truncated power iteration
+    # (poor man's SVD — good enough for feature engineering)
+    dims = min(dimensions, n - 1, 64)
+    if dims <= 0:
+        return {node: [0.0] * dimensions for node in nodes}
+
+    embeddings: dict[str, list[float]] = {}
+
+    # Normalize rows
+    for i in range(n):
+        row_sum = sum(cooc[i]) + 1e-10
+        for j in range(n):
+            cooc[i][j] /= row_sum
+
+    # Extract top-k dimensions via random projection
+    _random.seed(42)
+    projection = [[_random.gauss(0, 1) / math.sqrt(dims) for _ in range(dims)] for _ in range(n)]
+
+    # Multiply cooc × projection
+    for i, node in enumerate(nodes):
+        emb = [0.0] * dims
+        for j in range(n):
+            if cooc[i][j] > 0:
+                for d in range(dims):
+                    emb[d] += cooc[i][j] * projection[j][d]
+
+        # Normalize
+        norm = math.sqrt(sum(x * x for x in emb)) + 1e-10
+        embeddings[node] = [x / norm for x in emb]
+
+    return embeddings
