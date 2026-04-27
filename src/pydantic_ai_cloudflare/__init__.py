@@ -6,8 +6,10 @@ from .agent import cloudflare_agent
 from .ai_search import AISearchToolset
 from .browser_run import BrowserRunToolset
 from .d1 import D1MessageHistory
+from .data_profiler import DataDictionary, profile_data, profile_data_with_llm
 from .embeddings import CloudflareEmbeddingModel
 from .gateway import GatewayObservability
+from .graph import KnowledgeGraph
 from .knowledge import DIYKnowledgeBase, KnowledgeBase
 from .models import list_models, recommend_model
 from .provider import CloudflareProvider, cloudflare_model
@@ -37,6 +39,11 @@ __all__ = [
     # Knowledge base / RAG
     "KnowledgeBase",
     "DIYKnowledgeBase",
+    # Knowledge graph
+    "KnowledgeGraph",
+    "profile_data",
+    "profile_data_with_llm",
+    "DataDictionary",
     # Persistence
     "D1MessageHistory",
     # Observability

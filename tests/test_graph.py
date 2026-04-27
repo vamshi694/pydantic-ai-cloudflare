@@ -1,0 +1,212 @@
+"""Tests for KnowledgeGraph."""
+
+from __future__ import annotations
+
+import os
+from unittest.mock import patch
+
+import pytest
+
+from pydantic_ai_cloudflare.graph import KnowledgeGraph, _cosine_sim, _jaccard
+
+SAMPLE_RECORDS = [
+    {
+        "id": "A",
+        "industry": "SaaS",
+        "tech": "AWS, K8s",
+        "employees": 1200,
+        "desc": "Cloud monitoring platform",
+    },
+    {
+        "id": "B",
+        "industry": "SaaS",
+        "tech": "AWS, Go",
+        "employees": 500,
+        "desc": "Cloud storage solution",
+    },
+    {
+        "id": "C",
+        "industry": "Security",
+        "tech": "Azure, Rust",
+        "employees": 300,
+        "desc": "Zero trust security",
+    },
+]
+
+
+class TestGraphPrimitives:
+    def test_cosine_sim(self) -> None:
+        assert abs(_cosine_sim([1, 0], [1, 0]) - 1.0) < 0.01
+        assert abs(_cosine_sim([1, 0], [0, 1]) - 0.0) < 0.01
+        assert _cosine_sim([], []) == 0.0
+
+    def test_jaccard(self) -> None:
+        assert _jaccard({1, 2, 3}, {2, 3, 4}) == 2 / 4
+        assert _jaccard(set(), set()) == 0.0
+
+    def test_add_node(self) -> None:
+        with patch.dict(os.environ, {"CLOUDFLARE_ACCOUNT_ID": "a", "CLOUDFLARE_API_TOKEN": "t"}):
+            kg = KnowledgeGraph()
+            nid = kg._add_node("entity", "NexaTech", {"revenue": "180M"})
+            assert nid == "entity:nexatech"
+            assert kg._nodes[nid]["label"] == "NexaTech"
+
+    def test_add_edge(self) -> None:
+        with patch.dict(os.environ, {"CLOUDFLARE_ACCOUNT_ID": "a", "CLOUDFLARE_API_TOKEN": "t"}):
+            kg = KnowledgeGraph()
+            kg._add_node("entity", "A")
+            kg._add_node("industry", "SaaS")
+            kg._add_edge("entity:a", "industry:saas", "HAS_INDUSTRY")
+            assert len(kg._edges) == 1
+            assert "industry:saas" in kg._adj["entity:a"]
+
+    def test_no_duplicate_edges(self) -> None:
+        with patch.dict(os.environ, {"CLOUDFLARE_ACCOUNT_ID": "a", "CLOUDFLARE_API_TOKEN": "t"}):
+            kg = KnowledgeGraph()
+            kg._add_node("entity", "A")
+            kg._add_node("industry", "SaaS")
+            kg._add_edge("entity:a", "industry:saas", "HAS_INDUSTRY")
+            kg._add_edge("entity:a", "industry:saas", "HAS_INDUSTRY")
+            assert len(kg._edges) == 1
+
+
+class TestBuildGraph:
+    @pytest.mark.asyncio
+    async def test_build_basic(self) -> None:
+        with patch.dict(os.environ, {"CLOUDFLARE_ACCOUNT_ID": "a", "CLOUDFLARE_API_TOKEN": "t"}):
+            kg = KnowledgeGraph()
+
+            stats = await kg.build_from_records(
+                SAMPLE_RECORDS,
+                id_column="id",
+                categorical_columns=["industry"],
+                numeric_columns=["employees"],
+                list_columns={"tech": "USES_TECH"},
+                text_columns=[],  # skip text to avoid API calls
+                extract_entities=False,
+                compute_similarity=False,
+            )
+
+            assert stats["nodes"] > 3  # 3 entities + feature nodes
+            assert stats["edges"] > 0
+            assert "entity:a" in kg._nodes
+            assert "industry:saas" in kg._nodes
+            assert "tech:aws" in kg._nodes
+
+    @pytest.mark.asyncio
+    async def test_build_with_data_dict(self) -> None:
+        from pydantic_ai_cloudflare.data_profiler import profile_data
+
+        with patch.dict(os.environ, {"CLOUDFLARE_ACCOUNT_ID": "a", "CLOUDFLARE_API_TOKEN": "t"}):
+            dd = profile_data(SAMPLE_RECORDS, id_column="id")
+            # Override text to skip API calls
+            dd.set_type("desc", "categorical")
+
+            kg = KnowledgeGraph()
+            stats = await kg.build_from_records(
+                SAMPLE_RECORDS,
+                data_dict=dd,
+                extract_entities=False,
+                compute_similarity=False,
+            )
+            assert stats["nodes"] > 0
+
+
+class TestFeatures:
+    @pytest.mark.asyncio
+    async def test_compute_features(self) -> None:
+        with patch.dict(os.environ, {"CLOUDFLARE_ACCOUNT_ID": "a", "CLOUDFLARE_API_TOKEN": "t"}):
+            kg = KnowledgeGraph()
+            await kg.build_from_records(
+                SAMPLE_RECORDS,
+                id_column="id",
+                categorical_columns=["industry"],
+                list_columns={"tech": "USES_TECH"},
+                text_columns=[],
+                extract_entities=False,
+                compute_similarity=False,
+            )
+
+            features = kg.compute_features()
+            assert "A" in features
+            assert "degree" in features["A"]
+            assert "community_id" in features["A"]
+            assert "pagerank" in features["A"]
+            assert "clustering_coeff" in features["A"]
+
+    @pytest.mark.asyncio
+    async def test_pairwise_features(self) -> None:
+        with patch.dict(os.environ, {"CLOUDFLARE_ACCOUNT_ID": "a", "CLOUDFLARE_API_TOKEN": "t"}):
+            kg = KnowledgeGraph()
+            await kg.build_from_records(
+                SAMPLE_RECORDS,
+                id_column="id",
+                categorical_columns=["industry"],
+                list_columns={"tech": "USES_TECH"},
+                text_columns=[],
+                extract_entities=False,
+                compute_similarity=False,
+            )
+
+            pf = kg.pairwise_features("A", "B")
+            assert "shared_neighbors" in pf
+            assert "jaccard" in pf
+            assert "adamic_adar" in pf
+            assert pf["shared_neighbors"] > 0  # they share SaaS + AWS
+
+    @pytest.mark.asyncio
+    async def test_to_feature_dicts(self) -> None:
+        with patch.dict(os.environ, {"CLOUDFLARE_ACCOUNT_ID": "a", "CLOUDFLARE_API_TOKEN": "t"}):
+            kg = KnowledgeGraph()
+            await kg.build_from_records(
+                SAMPLE_RECORDS,
+                id_column="id",
+                categorical_columns=["industry"],
+                list_columns={"tech": "USES_TECH"},
+                text_columns=[],
+                extract_entities=False,
+                compute_similarity=False,
+            )
+
+            flat = kg.to_feature_dicts()
+            assert "A" in flat
+            # Flattened edge types should be columns
+            assert any("degree" in k for k in flat["A"])
+
+
+class TestQuery:
+    @pytest.mark.asyncio
+    async def test_find_similar(self) -> None:
+        with patch.dict(os.environ, {"CLOUDFLARE_ACCOUNT_ID": "a", "CLOUDFLARE_API_TOKEN": "t"}):
+            kg = KnowledgeGraph()
+            await kg.build_from_records(
+                SAMPLE_RECORDS,
+                id_column="id",
+                categorical_columns=["industry"],
+                list_columns={"tech": "USES_TECH"},
+                text_columns=[],
+                extract_entities=False,
+                compute_similarity=False,
+            )
+
+            similar = await kg.find_similar("A", top_k=2)
+            assert len(similar) > 0
+            # B should be most similar (shares SaaS + AWS)
+            assert similar[0]["entity"] == "B"
+
+    @pytest.mark.asyncio
+    async def test_neighborhood(self) -> None:
+        with patch.dict(os.environ, {"CLOUDFLARE_ACCOUNT_ID": "a", "CLOUDFLARE_API_TOKEN": "t"}):
+            kg = KnowledgeGraph()
+            await kg.build_from_records(
+                SAMPLE_RECORDS,
+                id_column="id",
+                categorical_columns=["industry"],
+                text_columns=[],
+                extract_entities=False,
+                compute_similarity=False,
+            )
+
+            hood = kg.neighborhood("A", hops=1)
+            assert len(hood["nodes"]) > 1
+            assert len(hood["edges"]) > 0
