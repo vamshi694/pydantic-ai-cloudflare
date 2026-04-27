@@ -236,6 +236,84 @@ class TestKNN:
             assert knn["A"]["knn_entities"][0] == "B"
 
 
+class TestKNNRateFeatures:
+    @pytest.mark.asyncio
+    async def test_knn_rate_features(self) -> None:
+        records = [
+            {"id": "A", "industry": "SaaS", "tech": "AWS, K8s", "products": "CDN, WAF"},
+            {"id": "B", "industry": "SaaS", "tech": "AWS, Go", "products": "CDN, ZT"},
+            {"id": "C", "industry": "SaaS", "tech": "AWS, Rust", "products": "WAF, ZT"},
+            {"id": "D", "industry": "Security", "tech": "Azure", "products": "ZT"},
+        ]
+        with patch.dict(os.environ, {"CLOUDFLARE_ACCOUNT_ID": "a", "CLOUDFLARE_API_TOKEN": "t"}):
+            kg = KnowledgeGraph()
+            await kg.build_from_records(
+                records,
+                id_column="id",
+                categorical_columns=["industry"],
+                list_columns={"tech": "USES_TECH"},
+                text_columns=[],
+                extract_entities=False,
+                compute_similarity=False,
+            )
+
+            rates = kg.knn_rate_features(["products"], k=2, metric="graph")
+            assert "A" in rates
+            # A's peers (B, C — share SaaS+AWS) should have ZT
+            assert "knn_rate_zt" in rates["A"]
+            # B and C both have ZT → rate should be 1.0
+            assert rates["A"]["knn_rate_zt"] >= 0.5
+
+    @pytest.mark.asyncio
+    async def test_recommend(self) -> None:
+        records = [
+            {"id": "A", "industry": "SaaS", "tech": "AWS", "products": "CDN"},
+            {"id": "B", "industry": "SaaS", "tech": "AWS", "products": "CDN, WAF"},
+            {"id": "C", "industry": "SaaS", "tech": "AWS", "products": "CDN, WAF, ZT"},
+        ]
+        with patch.dict(os.environ, {"CLOUDFLARE_ACCOUNT_ID": "a", "CLOUDFLARE_API_TOKEN": "t"}):
+            kg = KnowledgeGraph()
+            await kg.build_from_records(
+                records,
+                id_column="id",
+                categorical_columns=["industry"],
+                list_columns={"tech": "USES_TECH"},
+                text_columns=[],
+                extract_entities=False,
+                compute_similarity=False,
+            )
+
+            recs = kg.recommend("A", ["products"], k=2, min_rate=0.5)
+            # A has CDN. B and C (peers) have WAF. Should recommend WAF.
+            values = [r["value"] for r in recs]
+            assert "waf" in values
+
+    @pytest.mark.asyncio
+    async def test_co_occurrence(self) -> None:
+        records = [
+            {"id": "A", "products": "CDN, WAF"},
+            {"id": "B", "products": "CDN, WAF, ZT"},
+            {"id": "C", "products": "CDN"},
+            {"id": "D", "products": "WAF, ZT"},
+        ]
+        with patch.dict(os.environ, {"CLOUDFLARE_ACCOUNT_ID": "a", "CLOUDFLARE_API_TOKEN": "t"}):
+            kg = KnowledgeGraph()
+            await kg.build_from_records(
+                records,
+                id_column="id",
+                list_columns={"products": "HAS_PRODUCT"},
+                text_columns=[],
+                extract_entities=False,
+                compute_similarity=False,
+            )
+
+            co = kg.co_occurrence_features("products")
+            # P(WAF|CDN): A,B,C have CDN. A,B have WAF. → 2/3 = 0.667
+            assert co["cdn"]["waf"] > 0.5
+            # P(CDN|WAF): A,B,D have WAF. A,B,C have CDN. → 2/3 = 0.667
+            assert co["waf"]["cdn"] > 0.5
+
+
 class TestAddRecords:
     @pytest.mark.asyncio
     async def test_incremental_add(self) -> None:

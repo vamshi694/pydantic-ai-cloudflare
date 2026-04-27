@@ -852,6 +852,214 @@ class KnowledgeGraph:
         return results
 
     # ============================================================
+    # KNN Rate features (peer adoption → propensity signals)
+    # ============================================================
+
+    def knn_rate_features(
+        self,
+        target_columns: list[str],
+        *,
+        k: int = 3,
+        metric: str = "graph",
+    ) -> dict[str, dict[str, Any]]:
+        """Compute peer adoption rates for target columns.
+
+        For each entity, finds K nearest neighbors (structurally similar
+        accounts) and computes what fraction of those neighbors have each
+        value in the target columns.
+
+        This is the core insight: "accounts sharing entity nodes are
+        structurally similar — their portfolios become the recommendation."
+
+        Example: if 2/3 of an account's graph neighbors have CASB,
+        knn_rate_casb = 0.67. This becomes a propensity signal.
+
+        Args:
+            target_columns: Column names whose values become rate features.
+                e.g. ["products_owned", "use_cases"] where each is a
+                comma-separated list or categorical.
+            k: Number of nearest neighbors.
+            metric: "graph" (Jaccard distance) or "embedding" (cosine).
+
+        Returns:
+            {entity_id: {
+                "knn_rate_{value}": float,  # adoption rate among peers
+                "knn_peers": [peer_ids],    # who the peers are
+                "knn_peer_votes": {value: [bool per peer]},
+            }}
+        """
+        knn_data = self.knn_features(k=k, metric=metric)
+
+        # Collect all possible values across target columns
+        all_values: set[str] = set()
+        entity_values: dict[str, set[str]] = {}  # entity_nid → set of values
+
+        for nid in self._entity_ids:
+            node = self._nodes.get(nid, {})
+            data = node.get("data", {})
+            vals: set[str] = set()
+
+            for col in target_columns:
+                raw = str(data.get(col, ""))
+                for item in (x.strip().lower() for x in raw.split(",") if x.strip()):
+                    vals.add(item)
+                    all_values.add(item)
+
+            entity_values[nid] = vals
+
+        # Build label → nid lookup
+        label_to_nid: dict[str, str] = {}
+        for nid in self._entity_ids:
+            label_to_nid[self._nodes[nid]["label"]] = nid
+
+        results: dict[str, dict[str, Any]] = {}
+
+        for entity_label, kdata in knn_data.items():
+            peer_labels = kdata.get("knn_entities", [])
+            peers_nids = [label_to_nid.get(p) for p in peer_labels if label_to_nid.get(p)]
+            entity_nid = label_to_nid.get(entity_label)
+
+            rates: dict[str, float] = {}
+            votes: dict[str, list[bool]] = {}
+
+            for value in sorted(all_values):
+                peer_has = [value in entity_values.get(p, set()) for p in peers_nids]
+                rate = sum(peer_has) / len(peer_has) if peer_has else 0.0
+                rates[f"knn_rate_{value}"] = round(rate, 4)
+                votes[value] = peer_has
+
+            # Entity's own values (for identifying gaps)
+            own_values = entity_values.get(entity_nid, set()) if entity_nid else set()
+
+            results[entity_label] = {
+                **rates,
+                "knn_peers": peer_labels,
+                "knn_peer_votes": votes,
+                "own_values": list(own_values),
+            }
+
+        return results
+
+    def recommend(
+        self,
+        entity_id: str,
+        target_columns: list[str],
+        *,
+        k: int = 3,
+        min_rate: float = 0.5,
+        metric: str = "graph",
+    ) -> list[dict[str, Any]]:
+        """Recommend values (products, use cases) based on peer adoption.
+
+        Finds the entity's K nearest neighbors, checks which target
+        values those peers have but the entity doesn't, and recommends
+        the ones with adoption rate >= min_rate.
+
+        This is the "their portfolios become the recommendation" logic.
+
+        Args:
+            entity_id: The account to generate recommendations for.
+            target_columns: Columns to recommend from.
+            k: Number of peers.
+            min_rate: Minimum peer adoption rate to recommend.
+            metric: "graph" or "embedding".
+
+        Returns:
+            List of recommendations sorted by peer adoption rate:
+            [{value, rate, peer_votes, reason}]
+        """
+        rates = self.knn_rate_features(target_columns, k=k, metric=metric)
+
+        # Find the entity
+        entity_data = None
+        for label, data in rates.items():
+            resolved = self._resolve_entity(entity_id)
+            if resolved and self._nodes.get(resolved, {}).get("label") == label:
+                entity_data = data
+                break
+        # Fallback: try exact label match
+        if entity_data is None and entity_id in rates:
+            entity_data = rates[entity_id]
+
+        if entity_data is None:
+            return []
+
+        own_values = set(entity_data.get("own_values", []))
+        peers = entity_data.get("knn_peers", [])
+        peer_votes = entity_data.get("knn_peer_votes", {})
+
+        recommendations = []
+        for value, votes in peer_votes.items():
+            if value in own_values:
+                continue  # already has it
+            rate = sum(votes) / len(votes) if votes else 0.0
+            if rate >= min_rate:
+                # Build human-readable peer vote string
+                vote_str = ""
+                for i, (peer, has) in enumerate(zip(peers, votes)):
+                    vote_str += f"{'✓' if has else '✗'}"
+                recommendations.append(
+                    {
+                        "value": value,
+                        "rate": round(rate, 2),
+                        "peer_votes": vote_str,
+                        "peers": peers,
+                        "reason": (
+                            f"{sum(votes)}/{len(votes)} structural peers have '{value}'. "
+                            f"Graph found a signal a flat table cannot."
+                        ),
+                    }
+                )
+
+        recommendations.sort(key=lambda x: x["rate"], reverse=True)
+        return recommendations
+
+    def co_occurrence_features(
+        self,
+        target_column: str,
+    ) -> dict[str, dict[str, float]]:
+        """Compute co-occurrence rates between values in a target column.
+
+        For each pair of values (A, B), computes P(B|A): the probability
+        that an entity with A also has B. Useful for:
+        - Co-purchase analysis
+        - Bundle recommendations
+        - Cross-sell identification
+
+        Args:
+            target_column: The column to analyze.
+
+        Returns:
+            {value_a: {value_b: P(B|A)}}
+        """
+        # Collect which entities have which values
+        value_entities: dict[str, set[str]] = defaultdict(set)
+
+        for nid in self._entity_ids:
+            data = self._nodes.get(nid, {}).get("data", {})
+            raw = str(data.get(target_column, ""))
+            for item in (x.strip().lower() for x in raw.split(",") if x.strip()):
+                value_entities[item].add(nid)
+
+        # Compute conditional probabilities
+        result: dict[str, dict[str, float]] = {}
+        values = sorted(value_entities.keys())
+
+        for a in values:
+            a_entities = value_entities[a]
+            if not a_entities:
+                continue
+            result[a] = {}
+            for b in values:
+                if a == b:
+                    continue
+                b_entities = value_entities[b]
+                overlap = len(a_entities & b_entities)
+                result[a][b] = round(overlap / len(a_entities), 3)
+
+        return result
+
+    # ============================================================
     # LLM queries over the graph
     # ============================================================
 
