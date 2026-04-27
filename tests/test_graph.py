@@ -309,9 +309,10 @@ class TestKNNRateFeatures:
 
             co = kg.co_occurrence_features("products")
             # P(WAF|CDN): A,B,C have CDN. A,B have WAF. → 2/3 = 0.667
-            assert co["cdn"]["waf"] > 0.5
+            assert co["cdn"]["waf"]["p_ba"] > 0.5
+            assert co["cdn"]["waf"]["lift"] > 0  # lift should be computed
             # P(CDN|WAF): A,B,D have WAF. A,B,C have CDN. → 2/3 = 0.667
-            assert co["waf"]["cdn"] > 0.5
+            assert co["waf"]["cdn"]["p_ba"] > 0.5
 
 
 class TestAddRecords:

@@ -143,6 +143,7 @@ class KnowledgeGraph:
         *,
         embedding_model: str = "@cf/baai/bge-base-en-v1.5",
         extraction_model: str = "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+        canonical_map: dict[str, str] | None = None,
         account_id: str | None = None,
         api_key: str | None = None,
         request_timeout: float = DEFAULT_TIMEOUT,
@@ -150,6 +151,7 @@ class KnowledgeGraph:
         self._name = name
         self._embedding_model = embedding_model
         self._extraction_model = extraction_model
+        self._canonical_map = _build_canonical_lookup(canonical_map or {})
         self._account_id = resolve_account_id(account_id)
         self._api_key = resolve_api_token(api_key)
         self._timeout = request_timeout
@@ -158,10 +160,11 @@ class KnowledgeGraph:
         # Graph storage
         self._nodes: dict[str, dict[str, Any]] = {}
         self._edges: list[dict[str, Any]] = []
-        self._adj: dict[str, set[str]] = defaultdict(set)  # undirected adjacency
+        self._adj: dict[str, set[str]] = defaultdict(set)
         self._typed_adj: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self._embeddings: dict[str, list[float]] = {}
-        self._entity_ids: list[str] = []  # ordered list of entity node IDs
+        self._entity_ids: list[str] = []
+        self._outcome_column: str | None = None  # set during build
 
         # Computed features (lazily populated)
         self._communities: dict[str, int] | None = None
@@ -169,10 +172,17 @@ class KnowledgeGraph:
 
     # -- Node/edge helpers --
 
+    def _canonicalize(self, value: str) -> str:
+        """Resolve aliases to canonical form."""
+        return self._canonical_map.get(value.lower().strip(), value)
+
     def _nid(self, ntype: str, value: str) -> str:
         return f"{ntype}:{value}".lower().strip()
 
     def _add_node(self, ntype: str, value: str, data: dict | None = None) -> str:
+        # Canonicalize non-entity nodes (collapse "Zscaler" / "ZS" / "zscaler inc")
+        if ntype != "entity":
+            value = self._canonicalize(value)
         nid = self._nid(ntype, value)
         if nid not in self._nodes:
             self._nodes[nid] = {"id": nid, "type": ntype, "label": value, "data": data or {}}
@@ -180,17 +190,35 @@ class KnowledgeGraph:
             self._nodes[nid]["data"].update(data)
         return nid
 
-    def _add_edge(self, src: str, tgt: str, etype: str, weight: float = 1.0) -> None:
+    def _add_edge(
+        self,
+        src: str,
+        tgt: str,
+        etype: str,
+        weight: float = 1.0,
+        confidence: float = 1.0,
+        outcome: str | None = None,
+    ) -> None:
+        # Check for duplicate — if exists, accumulate weight (multi-source support)
         for e in self._typed_adj[src]:
             if e["target"] == tgt and e["type"] == etype:
+                e["weight"] = max(e["weight"], weight)  # take stronger
+                e["confidence"] = max(e["confidence"], confidence)
                 return
-        edge = {"source": src, "target": tgt, "type": etype, "weight": weight}
+        edge = {
+            "source": src,
+            "target": tgt,
+            "type": etype,
+            "weight": weight,
+            "confidence": confidence,
+            "outcome": outcome,
+        }
         self._edges.append(edge)
         self._typed_adj[src].append(edge)
         self._typed_adj[tgt].append({**edge, "source": tgt, "target": src})
         self._adj[src].add(tgt)
         self._adj[tgt].add(src)
-        self._features = None  # invalidate cache
+        self._features = None
 
     # -- API helpers --
 
@@ -283,6 +311,8 @@ class KnowledgeGraph:
         similarity_threshold: float = 0.70,
         temporal_column: str | None = None,
         temporal_decay: float = 0.0,
+        outcome_column: str | None = None,
+        confidence_map: dict[str, float] | None = None,
     ) -> dict[str, int]:
         """Build graph from tabular records.
 
@@ -308,6 +338,10 @@ class KnowledgeGraph:
         """
         if not records:
             return {"nodes": 0, "edges": 0}
+
+        self._outcome_column = outcome_column
+        # Confidence per column type (structured > list > text-extracted)
+        conf_map = confidence_map or {}
 
         # Use DataDictionary if provided
         if data_dict is not None:
@@ -379,19 +413,38 @@ class KnowledgeGraph:
                     except Exception:
                         pass
 
+            # Resolve outcome for this record
+            record_outcome = str(record.get(outcome_column, "")) if outcome_column else None
+
             # Categorical → feature nodes
             for col in categorical_columns:
                 val = str(record.get(col, "")).strip()
                 if val and val.lower() not in ("", "none", "null", "nan", "unknown"):
                     fid = self._add_node(col, val)
-                    self._add_edge(entity_nid, fid, f"HAS_{col.upper()}", weight=edge_weight)
+                    conf = conf_map.get(col, 1.0)
+                    self._add_edge(
+                        entity_nid,
+                        fid,
+                        f"HAS_{col.upper()}",
+                        weight=edge_weight,
+                        confidence=conf,
+                        outcome=record_outcome,
+                    )
 
             # List columns → split on comma
             for col, etype in list_columns.items():
                 val = str(record.get(col, ""))
+                conf = conf_map.get(col, 0.9)
                 for item in (x.strip() for x in val.split(",") if x.strip()):
                     iid = self._add_node(col, item)
-                    self._add_edge(entity_nid, iid, etype, weight=edge_weight)
+                    self._add_edge(
+                        entity_nid,
+                        iid,
+                        etype,
+                        weight=edge_weight,
+                        confidence=conf,
+                        outcome=record_outcome,
+                    )
 
             # Numeric → bucketed ranges
             for col in numeric_columns:
@@ -1073,45 +1126,76 @@ class KnowledgeGraph:
     def co_occurrence_features(
         self,
         target_column: str,
-    ) -> dict[str, dict[str, float]]:
-        """Compute co-occurrence rates between values in a target column.
+        *,
+        outcome_filter: str | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """Co-occurrence with lift and outcome-aware rates.
 
-        For each pair of values (A, B), computes P(B|A): the probability
-        that an entity with A also has B. Useful for:
-        - Co-purchase analysis
-        - Bundle recommendations
-        - Cross-sell identification
+        For each pair (A, B), computes:
+        - p_ba: P(B|A) — conditional probability
+        - lift: P(A∧B) / (P(A) · P(B)) — statistical lift (>1 = positive signal)
+        - co_count: how many entities have both
+        - co_won: how many with both have outcome matching outcome_filter
+        - co_rate_won: P(B|A, outcome=filter) — outcome-conditional rate
 
         Args:
-            target_column: The column to analyze.
+            target_column: Column to analyze (e.g. "products_owned").
+            outcome_filter: If set, also compute outcome-conditional rates.
+                e.g. "Won" computes P(B|A, outcome=Won) separately.
 
         Returns:
-            {value_a: {value_b: P(B|A)}}
+            {value_a: {value_b: {p_ba, lift, co_count, co_won, co_rate_won}}}
         """
-        # Collect which entities have which values
         value_entities: dict[str, set[str]] = defaultdict(set)
+        entity_outcomes: dict[str, str] = {}
+        n_total = len(self._entity_ids)
 
         for nid in self._entity_ids:
             data = self._nodes.get(nid, {}).get("data", {})
             raw = str(data.get(target_column, ""))
             for item in (x.strip().lower() for x in raw.split(",") if x.strip()):
                 value_entities[item].add(nid)
+            if self._outcome_column:
+                entity_outcomes[nid] = str(data.get(self._outcome_column, "")).lower()
 
-        # Compute conditional probabilities
-        result: dict[str, dict[str, float]] = {}
+        result: dict[str, dict[str, Any]] = {}
         values = sorted(value_entities.keys())
 
         for a in values:
             a_entities = value_entities[a]
             if not a_entities:
                 continue
+            p_a = len(a_entities) / n_total if n_total else 0
             result[a] = {}
+
             for b in values:
                 if a == b:
                     continue
                 b_entities = value_entities[b]
-                overlap = len(a_entities & b_entities)
-                result[a][b] = round(overlap / len(a_entities), 3)
+                co_entities = a_entities & b_entities
+                co_count = len(co_entities)
+                p_b = len(b_entities) / n_total if n_total else 0
+                p_ab = co_count / n_total if n_total else 0
+                p_ba = co_count / len(a_entities) if a_entities else 0
+                lift = p_ab / (p_a * p_b) if (p_a * p_b) > 0 else 0
+
+                entry: dict[str, Any] = {
+                    "p_ba": round(p_ba, 3),
+                    "lift": round(lift, 3),
+                    "co_count": co_count,
+                }
+
+                # Outcome-conditional rates
+                if outcome_filter and entity_outcomes:
+                    co_won = sum(
+                        1
+                        for e in co_entities
+                        if outcome_filter.lower() in entity_outcomes.get(e, "")
+                    )
+                    entry["co_won"] = co_won
+                    entry["co_rate_won"] = round(co_won / co_count, 3) if co_count else 0
+
+                result[a][b] = entry
 
         return result
 
@@ -1222,6 +1306,92 @@ class KnowledgeGraph:
         )
 
         return result.answer
+
+    def to_ml_dataset(
+        self,
+        label_column: str,
+        *,
+        target_columns: list[str] | None = None,
+        k: int = 5,
+        include_knn_rates: bool = True,
+        include_knn_distances: bool = True,
+    ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, int]]]:
+        """Export (X, y) ready for sklearn/XGBoost.
+
+        Combines all graph features + KNN rates into X.
+        Generates binary label columns from label_column into y.
+
+        Args:
+            label_column: Column with multi-value labels (e.g. "products_owned").
+            target_columns: Columns for KNN rate features.
+            k: KNN neighbors.
+            include_knn_rates: Add knn_rate_* features.
+            include_knn_distances: Add knn distance features.
+
+        Returns:
+            (X, y) where X = {entity: {feature: value}} and
+            y = {entity: {label_value: 0 or 1}}.
+        """
+        # Build X
+        x: dict[str, dict[str, Any]] = {}
+        graph_feats = self.to_feature_dicts()
+
+        knn_rates = {}
+        if include_knn_rates and target_columns:
+            knn_rates = self.knn_rate_features(target_columns, k=k)
+
+        knn_dists = {}
+        if include_knn_distances:
+            knn_dists = self.knn_features(k=k, metric="graph")
+
+        for entity, feats in graph_feats.items():
+            row = dict(feats)
+            # Add KNN rate features
+            if entity in knn_rates:
+                for key, val in knn_rates[entity].items():
+                    if key.startswith("knn_rate_") and isinstance(val, float):
+                        row[key] = val
+            # Add KNN distance features
+            if entity in knn_dists:
+                row["knn_avg_distance"] = knn_dists[entity].get("knn_avg_distance", 1.0)
+                row["knn_min_distance"] = knn_dists[entity].get("knn_min_distance", 1.0)
+            x[entity] = row
+
+        # Build y (binary labels)
+        all_labels: set[str] = set()
+        entity_labels: dict[str, set[str]] = {}
+
+        for nid in self._entity_ids:
+            node = self._nodes.get(nid, {})
+            data = node.get("data", {})
+            raw = str(data.get(label_column, ""))
+            labels = {item.strip().lower() for item in raw.split(",") if item.strip()}
+            entity_labels[node["label"]] = labels
+            all_labels |= labels
+
+        y: dict[str, dict[str, int]] = {}
+        for entity in graph_feats:
+            owned = entity_labels.get(entity, set())
+            y[entity] = {f"label_{v}": (1 if v in owned else 0) for v in sorted(all_labels)}
+
+        return x, y
+
+    def save_features(self, path: str) -> None:
+        """Persist feature matrix to JSON for reproducible inference."""
+        import json as json_mod
+
+        features = self.to_feature_dicts()
+        with open(path, "w") as f:
+            json_mod.dump({"features": features, "entity_count": len(features)}, f)
+
+    @classmethod
+    def load_features(cls, path: str) -> dict[str, dict[str, Any]]:
+        """Load persisted feature matrix."""
+        import json as json_mod
+
+        with open(path) as f:
+            data = json_mod.load(f)
+        return data["features"]
 
     @property
     def stats(self) -> dict[str, Any]:
@@ -1439,3 +1609,15 @@ def _node2vec_embeddings(
             norm = math.sqrt(sum(x * x for x in emb)) + 1e-10
             embeddings[node] = [x / norm for x in emb]
         return embeddings
+
+
+def _build_canonical_lookup(alias_map: dict[str, str]) -> dict[str, str]:
+    """Build a case-insensitive alias → canonical lookup.
+
+    Input: {"ZS": "Zscaler", "zscaler inc": "Zscaler", "PAN": "Palo Alto"}
+    Output: {"zs": "Zscaler", "zscaler inc": "Zscaler", "pan": "Palo Alto"}
+    """
+    lookup: dict[str, str] = {}
+    for alias, canonical in alias_map.items():
+        lookup[alias.lower().strip()] = canonical
+    return lookup
