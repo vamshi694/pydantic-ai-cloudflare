@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.1.9 (2026-04-27)
+
+### Fixed (from production usage feedback)
+- **`find_similar()` now supports `edge_type_weights` and `exclude_edge_types`** — numeric bucket nodes (propensity_score_range:tiny) no longer drown out product/competitor signal. Weight product edges 3-5x higher.
+- **`explain()` shared nodes show typed labels** — `tech:aws` instead of raw node IDs. Human-presentable output.
+- **`to_ml_dataset()` y labels canonicalized** — `magic wan / magic firewall` and `magic wan` collapse to one label column, not two.
+- **`recommend()` `exclude_dominant` parameter** — skip values present in >70% of entities (too common to recommend). Prevents Zero Trust (79% prevalence) from blocking all recommendations.
+- **Louvain resolution=1.5** — finds more granular communities (was finding only 5 for 292 accounts across 74 industries).
+
 ## 0.1.8 (2026-04-27)
 
 ### Fixed (all 11 bugs from team review)

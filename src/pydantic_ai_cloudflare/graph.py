@@ -750,7 +750,7 @@ class EntityGraph:
 
         # Community detection (Louvain if networkx available, else label prop)
         logger.info("Running Louvain community detection...")
-        self._communities = _louvain_communities(self._adj)
+        self._communities = _louvain_communities(self._adj, resolution=1.5)
         community_sizes: dict[int, int] = defaultdict(int)
         for nid in self._entity_ids:
             cid = self._communities.get(nid, -1)
@@ -917,8 +917,19 @@ class EntityGraph:
         *,
         top_k: int = 5,
         hops: int = 2,
+        edge_type_weights: dict[str, float] | None = None,
+        exclude_edge_types: list[str] | None = None,
     ) -> list[dict[str, Any]]:
-        """Find similar entities via graph traversal + embeddings."""
+        """Find similar entities via graph traversal + embeddings.
+
+        Args:
+            edge_type_weights: Weight multipliers per edge type.
+                e.g. {"HAS_PRODUCTS_OWNED": 3.0, "COMPETES_WITH": 5.0}
+                to prioritize product/competitor signal over numeric buckets.
+            exclude_edge_types: Edge types to skip entirely.
+                e.g. ["IN_PROPENSITY_SCORE_RANGE", "IN_DEALS_LOST_RANGE"]
+                to prevent missing-data coincidence from driving similarity.
+        """
         source = self._resolve_entity(entity_id)
         if source is None:
             return []
@@ -938,7 +949,12 @@ class EntityGraph:
                         continue
                     tgt_node = self._nodes.get(tgt, {})
                     if tgt_node.get("type") == "entity" and tgt != source:
+                        etype = e.get("type", "")
+                        if exclude_edge_types and etype in exclude_edge_types:
+                            continue
                         w = e.get("weight", 1.0) / (hop + 1)
+                        if edge_type_weights and etype in edge_type_weights:
+                            w *= edge_type_weights[etype]
                         scores[tgt] += w
                         via = self._nodes.get(node, {})
                         if via.get("type") != "entity":
@@ -1269,8 +1285,14 @@ class EntityGraph:
         k: int = 3,
         min_rate: float = 0.5,
         metric: str = "graph",
-    ) -> list[dict[str, Any]]:
+        exclude_dominant: float | None = None,
+    ) -> dict[str, Any]:
         """Recommend values (products, use cases) based on peer adoption.
+
+        Args:
+            exclude_dominant: If set, skip values present in more than this
+                fraction of ALL entities. e.g. 0.7 skips values that 70%+
+                of entities already have (too common to be a useful signal).
 
         Finds the entity's K nearest neighbors, checks which target
         values those peers have but the entity doesn't, and recommends
@@ -1315,10 +1337,28 @@ class EntityGraph:
         peers = entity_data.get("knn_peers", [])
         peer_votes = entity_data.get("knn_peer_votes", {})
 
+        # Compute global prevalence to filter dominant values
+        dominant_values: set[str] = set()
+        if exclude_dominant is not None:
+            value_counts: dict[str, int] = defaultdict(int)
+            for nid in self._entity_ids:
+                data = self._nodes.get(nid, {}).get("data", {})
+                for col in target_columns:
+                    for item in str(data.get(col, "")).lower().split(","):
+                        item = item.strip()
+                        if item:
+                            value_counts[item] += 1
+            n_total = len(self._entity_ids)
+            for val, cnt in value_counts.items():
+                if cnt / n_total > exclude_dominant:
+                    dominant_values.add(val)
+
         recommendations = []
         for value, votes in peer_votes.items():
             if value in own_values:
                 continue  # already has it
+            if value in dominant_values:
+                continue  # too common to be useful signal
             rate = sum(votes) / len(votes) if votes else 0.0
             if rate >= min_rate:
                 # Build human-readable peer vote string
@@ -1416,9 +1456,10 @@ class EntityGraph:
             peer_neighbors = self._adj.get(peer_nid, set())
             shared = my_neighbors & peer_neighbors
             shared_labels = [
-                self._nodes[n]["label"]
+                f"{self._nodes[n]['type']}:{self._nodes[n]['label']}"
                 for n in shared
                 if self._nodes.get(n, {}).get("type") != "entity"
+                and self._nodes[n].get("label", "")  # skip empty labels
             ]
             union = len(my_neighbors | peer_neighbors)
             peer_details.append(
@@ -1759,7 +1800,13 @@ class EntityGraph:
             node = self._nodes.get(nid, {})
             data = node.get("data", {})
             raw = str(data.get(label_column, ""))
-            labels = {item.strip().lower() for item in raw.split(",") if item.strip()}
+            labels = set()
+            for item in raw.split(","):
+                item = item.strip().lower()
+                if item:
+                    # Apply canonical map to collapse label variants
+                    item = self._canonical_map.get(item, item)
+                    labels.add(item)
             entity_labels[node["label"]] = labels
             all_labels |= labels
 
@@ -1883,7 +1930,7 @@ def _pagerank(
     return pr
 
 
-def _louvain_communities(adj: dict[str, set[str]]) -> dict[str, int]:
+def _louvain_communities(adj: dict[str, set[str]], resolution: float = 1.0) -> dict[str, int]:
     """Louvain community detection via networkx (much better than label prop)."""
     try:
         import networkx as nx
@@ -1896,7 +1943,7 @@ def _louvain_communities(adj: dict[str, set[str]]) -> dict[str, int]:
         if len(G) == 0:
             return {}
 
-        communities = nx.community.louvain_communities(G, seed=42)
+        communities = nx.community.louvain_communities(G, seed=42, resolution=resolution)
         result = {}
         for cid, members in enumerate(communities):
             for m in members:
