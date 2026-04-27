@@ -536,7 +536,13 @@ class EntityGraph:
                 elif isinstance(val, (int, float)):
                     numeric_columns.append(col)
 
-        for record in records:
+        n_records = len(records)
+        log_interval = max(n_records // 10, 100)  # log every 10% or 100 records
+
+        for rec_idx, record in enumerate(records):
+            if rec_idx > 0 and rec_idx % log_interval == 0:
+                logger.info(f"Building graph: {rec_idx}/{n_records} records processed")
+
             eid = str(record.get(id_column, ""))
             if not eid:
                 continue
@@ -737,9 +743,12 @@ class EntityGraph:
         if self._features is not None:
             return self._features
 
+        n_entities = len(self._entity_ids)
+        logger.info(f"Computing features for {n_entities} entities...")
         features: dict[str, dict[str, Any]] = {}
 
         # Community detection (Louvain if networkx available, else label prop)
+        logger.info("Running Louvain community detection...")
         self._communities = _louvain_communities(self._adj)
         community_sizes: dict[int, int] = defaultdict(int)
         for nid in self._entity_ids:
@@ -749,6 +758,7 @@ class EntityGraph:
         # PageRank
         pr = _pagerank(self._adj, iterations=20)
 
+        logger.info("Computing Node2Vec embeddings...")
         # Node2Vec graph embeddings via random walks + Word2Vec
         # Scales to 100K+ nodes (O(walks × length), not O(n²))
         n2v = _node2vec_embeddings(
@@ -1317,6 +1327,129 @@ class EntityGraph:
 
         recommendations.sort(key=lambda x: x["rate"], reverse=True)
         return recommendations
+
+    def explain(
+        self,
+        entity_id: str,
+        *,
+        target_columns: list[str] | None = None,
+        k: int = 5,
+    ) -> dict[str, Any]:
+        """Explain WHY an entity gets its recommendations and features.
+
+        Traces the actual graph paths that produce each signal.
+        Returns a structured explanation a developer can show to end users.
+
+        Args:
+            entity_id: The entity to explain.
+            target_columns: Columns to explain recommendations for.
+            k: Number of peers.
+
+        Returns:
+            {
+                "entity": str,
+                "community": {id, size, top_members},
+                "peers": [{entity, shared_nodes, jaccard}],
+                "recommendations": [{value, rate, peer_evidence: [{peer, has, shared_path}]}],
+                "relationships": [{target, type}],  # entity-to-entity edges
+            }
+        """
+        resolved = self._resolve_entity(entity_id)
+        if resolved is None:
+            return {"entity": entity_id, "error": "not found"}
+
+        node = self._nodes[resolved]
+        label = node["label"]
+        explanation: dict[str, Any] = {"entity": label}
+
+        # Community explanation
+        features = self.compute_features()
+        entity_feats = features.get(label, {})
+        cid = entity_feats.get("community_id", -1)
+        community_members = [
+            eid for eid, f in features.items() if f.get("community_id") == cid and eid != label
+        ]
+        explanation["community"] = {
+            "id": cid,
+            "size": entity_feats.get("community_size", 0),
+            "top_members": community_members[:5],
+        }
+
+        # Peer explanation (WHO are the peers and WHY)
+        my_neighbors = self._adj.get(resolved, set())
+        peer_details = []
+        knn = self.knn_features(k=k, metric="graph")
+        entity_knn = knn.get(label, {})
+        for peer_label in entity_knn.get("knn_entities", []):
+            peer_nid = self._resolve_entity(peer_label)
+            if peer_nid is None:
+                continue
+            peer_neighbors = self._adj.get(peer_nid, set())
+            shared = my_neighbors & peer_neighbors
+            shared_labels = [
+                self._nodes[n]["label"]
+                for n in shared
+                if self._nodes.get(n, {}).get("type") != "entity"
+            ]
+            union = len(my_neighbors | peer_neighbors)
+            peer_details.append(
+                {
+                    "entity": peer_label,
+                    "shared_nodes": shared_labels[:10],
+                    "jaccard": round(len(shared) / union, 3) if union else 0,
+                }
+            )
+        explanation["peers"] = peer_details
+
+        # Recommendation explanation (WHY each value is recommended)
+        if target_columns:
+            recs = self.recommend(entity_id, target_columns, k=k, min_rate=0.2)
+            rec_explanations = []
+            for rec in recs[:5]:
+                # Trace which peers have this value
+                peer_evidence = []
+                for peer in peer_details:
+                    peer_nid = self._resolve_entity(peer["entity"])
+                    if peer_nid is None:
+                        continue
+                    peer_data = self._nodes.get(peer_nid, {}).get("data", {})
+                    has_value = False
+                    for col in target_columns:
+                        vals = str(peer_data.get(col, "")).lower()
+                        if rec["value"] in vals:
+                            has_value = True
+                            break
+                    peer_evidence.append(
+                        {
+                            "peer": peer["entity"],
+                            "has_value": has_value,
+                            "shared_via": peer["shared_nodes"][:3],
+                        }
+                    )
+                rec_explanations.append(
+                    {
+                        "value": rec["value"],
+                        "rate": rec["rate"],
+                        "peer_evidence": peer_evidence,
+                    }
+                )
+            explanation["recommendations"] = rec_explanations
+
+        # Direct entity-to-entity relationships
+        relationships = []
+        for e in self._typed_adj.get(resolved, []):
+            target_node = self._nodes.get(e["target"], {})
+            if target_node.get("type") == "entity" and e["target"] != resolved:
+                relationships.append(
+                    {
+                        "target": target_node.get("label", ""),
+                        "type": e["type"],
+                        "confidence": e.get("confidence", 1.0),
+                    }
+                )
+        explanation["relationships"] = relationships
+
+        return explanation
 
     def co_occurrence_features(
         self,

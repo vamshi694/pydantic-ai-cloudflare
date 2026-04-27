@@ -127,6 +127,45 @@ class DataDictionary:
     def __repr__(self) -> str:
         return self.summary()
 
+    def review(self) -> str:
+        """Show each column with confidence flags for uncertain guesses.
+
+        Columns that might be wrong are flagged with ⚠️ so you know
+        what to check before building the graph.
+        """
+        lines = [
+            f"Data Dictionary ({len(self.columns)} columns)",
+            f"ID column: {self.id_column}",
+            "",
+            f"{'Column':<25s} {'Role':<14s} {'Flag':<4s} Reason",
+            f"{'-' * 25} {'-' * 14} {'-' * 4} {'-' * 40}",
+        ]
+        for col in self.columns.values():
+            flag = ""
+            # Flag uncertain classifications
+            if "high cardinality" in col.reason:
+                flag = "⚠️"  # might be text, id, or skip
+            elif col.role == "list" and col.stats.get("avg_items", 0) < 1.5:
+                flag = "⚠️"  # might be text with commas, not a real list
+            elif col.role == "categorical" and col.stats.get("cardinality", 0) > 30:
+                flag = "⚠️"  # high cardinality categorical — maybe text?
+            elif col.role == "skip":
+                flag = "⏭️"
+
+            lines.append(f"  {col.name:<25s} {col.role:<14s} {flag:<4s} {col.reason}")
+
+        flagged = sum(
+            1
+            for c in self.columns.values()
+            if "high cardinality" in c.reason
+            or (c.role == "list" and c.stats.get("avg_items", 0) < 1.5)
+            or (c.role == "categorical" and c.stats.get("cardinality", 0) > 30)
+        )
+        if flagged:
+            lines.append(f"\n⚠️ {flagged} column(s) flagged — review with dd.set_type(col, role)")
+
+        return "\n".join(lines)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "id_column": self.id_column,
