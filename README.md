@@ -28,13 +28,12 @@ from pydantic_ai_cloudflare import KnowledgeBase
 kb = KnowledgeBase("my-docs")
 answer = await kb.ask("How does caching work?")
 
-# 4. Knowledge graphs for ML feature engineering
-from pydantic_ai_cloudflare import EntityGraph, profile_data
+# 4. Knowledge graphs for ML feature engineering (4 lines, CSV → features)
+from pydantic_ai_cloudflare import EntityGraph
 kg = EntityGraph()
-dd = profile_data(records, id_column="account_id")  # auto-classifies 25 columns
-await kg.build_from_records(records, data_dict=dd)   # 2000 rows → 4321 nodes, 52K edges
-features = kg.to_feature_dicts()                     # 29 ML features per entity
-recs = kg.recommend("Acct A", ["products"])           # peer-based recommendations
+await kg.quick_build(records, id_column="account_id")  # auto-profile, structural-only
+features = kg.to_feature_dicts()                       # 29 ML features per entity
+recs = kg.recommend("Acct A", ["products"])             # peer-based recommendations
 
 # 5. Zero-config observability (every LLM call logged via AI Gateway)
 from pydantic_ai_cloudflare import GatewayObservability
@@ -530,15 +529,48 @@ How it works:
 
 Build typed entity graphs from tabular datasets. Each row becomes an entity, column values become nodes, edges represent real relationships. Then extract graph-derived features for ML.
 
-### Quick start
+### Quick start (CSV → ML features in 4 lines)
+
+```python
+import pandas as pd
+from pydantic_ai_cloudflare import EntityGraph
+
+df = pd.read_csv("customers.csv")
+kg = EntityGraph()
+await kg.quick_build(df.to_dict("records"), id_column="customer_id")
+features = kg.to_feature_dicts()  # 22+ ML features per entity
+```
+
+`quick_build()` auto-profiles the dataset (column type inference) and turns
+off the slow/costly options (LLM extraction, all-pairs similarity) by default.
+For full control use [`build_from_records()`](#full-control-build_from_records)
+or pass a [`GraphConfig`](#graphconfig-named-config-instead-of-20-kwargs) object.
+
+> **Tip — see warnings.** The build profiler emits data-quality warnings
+> (high null rates, sentinel zeros, low-cardinality columns) via the
+> `pydantic_ai_cloudflare.graph` logger. Add `logging.basicConfig(level=logging.WARNING)`
+> to see them, or read them from `kg.build_warnings`.
+
+```python
+>>> kg
+<EntityGraph name='default' entities=10000 nodes=28705 edges=153642>
+>>> len(kg)
+10000
+>>> "AcmeCorp" in kg
+True
+>>> for entity_label in kg:  # iteration yields entity labels
+...     ...
+```
+
+### Full-control build (`build_from_records`)
 
 ```python
 from pydantic_ai_cloudflare import EntityGraph, profile_data
 
-# 1. Auto-profile (detects column types)
+# 1. Auto-profile (detects column types) — review with dd.review()
 dd = profile_data(records, id_column="account_id")
 
-# 2. Build graph
+# 2. Build graph with full control over LLM extraction, similarity, etc.
 kg = EntityGraph()
 await kg.build_from_records(records, data_dict=dd)
 # 10,000 rows → 28K nodes, 153K edges in 0.25s
@@ -547,6 +579,28 @@ await kg.build_from_records(records, data_dict=dd)
 features = kg.to_feature_dicts()
 # 22+ features per entity: degree, pagerank, community, Node2Vec, ...
 ```
+
+### `GraphConfig` — named config instead of 20+ kwargs
+
+```python
+from pydantic_ai_cloudflare import EntityGraph, GraphConfig
+
+config = GraphConfig(
+    id_column="account_id",
+    categorical_columns=["industry", "geo"],
+    list_columns={"tech": "USES_TECH", "products": "HAS_PRODUCT"},
+    time_column="created_at",
+    as_of="2024-01-31",
+    extract_entities=False,
+    compute_similarity=False,
+)
+kg = EntityGraph()
+await kg.build_from_config(records, config)
+```
+
+Equivalent to `build_from_records(records, **config.to_kwargs())` — useful for
+test fixtures, persistence, or CLI tools where bundling 20+ parameters into
+one object is cleaner than a long argument list.
 
 ### Entity-to-entity relationships
 
@@ -830,6 +884,94 @@ Color modes:
 
 Layout options for HTML: `"cose"` (force, default), `"concentric"`,
 `"breadthfirst"`, `"grid"`, `"circle"`. Switch on the fly via the side panel.
+
+### Troubleshooting
+
+Common errors and how to fix them — read this when something looks wrong.
+
+**`RuntimeError: score_one() requires a frozen graph...`**
+You called `kg.score_one(record)` on a graph that was never frozen. Freezing
+locks the topology so training-time and inference-time features stay
+identical (no feature drift). Fix:
+
+```python
+await kg.build_from_records(train_records, ...)
+kg.freeze(target_columns=["products_owned"], k=5)   # ← required before score_one
+features = await kg.score_one(new_record)
+```
+
+If you only need bulk features for entities already in the graph, use
+`kg.compute_features()` or `kg.to_feature_dicts()` instead — no freeze required.
+
+**`RuntimeError: Cannot rebuild a frozen graph...`**
+You're calling `build_from_records()` on a frozen graph. For inference, use
+`score_one()`/`score_batch()` (no mutation). To rebuild from scratch, call
+`kg.unfreeze()` first.
+
+**`RuntimeError: Cannot add_records to a frozen graph...`**
+Same fix — `kg.unfreeze()`, add the records, then re-freeze if needed.
+
+**Empty graph after `build_from_records()`**
+Your records list was empty, or no `id_column` was found. Check:
+
+```python
+print(len(records))                  # > 0?
+print(records[0].keys())              # contains id_column?
+print(kg.build_warnings)              # data-quality issues?
+```
+
+**Build seems silent — no progress, no warnings**
+Warnings are logged at `WARNING` level via the `pydantic_ai_cloudflare.graph`
+logger. Add this to your script:
+
+```python
+import logging
+logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
+```
+
+Or read warnings programmatically: `kg.build_warnings` returns the same list.
+
+**Missing Cloudflare credentials**
+LLM extraction (`extract_entities=True`), summarization, similarity edges, and
+the `find_similar()`/`ask()` features all need Cloudflare Workers AI access.
+Set the env vars:
+
+```bash
+export CLOUDFLARE_ACCOUNT_ID=your-account-id
+export CLOUDFLARE_API_TOKEN=your-api-token
+```
+
+For pure structural graphs (no LLM), use `quick_build()` (LLM off by default)
+or `build_from_records(..., extract_entities=False, compute_similarity=False)`.
+
+**Hub features dominating `find_similar()` results**
+Common when a column has one value across most rows (e.g., `industry="SaaS"`
+for 80% of records). The IDF discount (`use_idf=True`) and sentinel-zero
+filter handle most cases automatically. If a hub still wins, drop the column
+or use `edge_type_weights` to downweight it explicitly.
+
+**Slow `extract_entities=True` build (30+ minutes on small datasets)**
+Bump `llm_concurrency` higher — default is 8. On a fast Cloudflare account
+you can safely run 16-32 concurrent extractions:
+
+```python
+await kg.build_from_records(records, ..., llm_concurrency=24)
+```
+
+If you hit rate limits, drop it back down. For 5K+ records, prefer
+`extract_entities=False` and rely on structural + KNN features.
+
+**`gensim not installed` warning when computing Node2Vec**
+Node2Vec is optional. Install with `pip install gensim` if you want
+embedding-based features. The graph still works without it — `compute_features()`
+just skips the `n2v_*` columns.
+
+**LLM returns malformed JSON / extraction failures**
+These are logged at WARNING level (`entity extraction failed: ...`) and the
+extraction job is skipped — the build continues. Check `kg.build_warnings`
+afterwards to see how many failed, and consider switching the
+`extraction_model` on `EntityGraph(...)` to a more reliable model like
+`@cf/qwen/qwen3-30b-a3b-fp8`.
 
 ### Benchmarks (10,000 accounts)
 

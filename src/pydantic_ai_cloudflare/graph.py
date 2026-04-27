@@ -41,6 +41,8 @@ import logging
 import math
 import random
 from collections import defaultdict
+from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -61,6 +63,69 @@ _NULL_STRINGS = frozenset(["", "none", "null", "nan", "n/a", "na", "unknown", "-
 
 # Default LLM concurrency for parallel extraction.
 _DEFAULT_LLM_CONCURRENCY = 8
+
+
+# ============================================================
+# Public configuration
+# ============================================================
+
+
+@dataclass
+class GraphConfig:
+    """Bundle of build-time configuration for ``EntityGraph.build_from_records``.
+
+    Useful when you'd rather pass one object than 20+ keyword arguments
+    — every field corresponds 1:1 to a kwarg of ``build_from_records``,
+    and defaults match. ``GraphConfig()`` produces the same behavior as
+    ``build_from_records(records)`` with no extras.
+
+    Example::
+
+        from pydantic_ai_cloudflare import EntityGraph, GraphConfig
+
+        config = GraphConfig(
+            id_column="account_id",
+            categorical_columns=["industry", "geo"],
+            list_columns={"tech": "USES_TECH", "products": "HAS_PRODUCT"},
+            time_column="created_at",
+            as_of="2024-01-31",
+            extract_entities=False,
+            compute_similarity=False,
+        )
+        kg = EntityGraph()
+        await kg.build_from_config(records, config)
+    """
+
+    id_column: str | None = None
+    data_dict: Any | None = None
+    text_columns: list[str] | None = None
+    categorical_columns: list[str] | None = None
+    numeric_columns: list[str] | None = None
+    list_columns: dict[str, str] | None = None
+    relationship_columns: dict[str, str] | None = None
+    sentinel_zero_columns: list[str] | None = None
+    auto_detect_sentinels: bool = True
+    sentinel_zero_rate: float = 0.30
+    extract_entities: bool = True
+    extract_relationships: bool = False
+    compute_similarity: bool = True
+    summarize_text: bool = False
+    similarity_threshold: float = 0.70
+    time_column: str | None = None
+    as_of: Any | None = None
+    temporal_decay: float = 0.0
+    outcome_column: str | None = None
+    confidence_map: dict[str, float] | None = None
+    llm_concurrency: int = _DEFAULT_LLM_CONCURRENCY
+    profile: bool = True
+
+    def to_kwargs(self) -> dict[str, Any]:
+        """Return the config as a kwargs dict for ``build_from_records``.
+
+        Uses shallow extraction (no deep-copy) so non-dataclass objects
+        like ``DataDictionary`` pass through unchanged.
+        """
+        return {f.name: getattr(self, f.name) for f in self.__dataclass_fields__.values()}
 
 
 # ============================================================
@@ -423,6 +488,67 @@ class EntityGraph:
         # later forgets to pass them and silently saves a smaller feature set.
         self._last_knn_target_columns: list[str] | None = None
         self._last_knn_k: int | None = None
+
+    # -- Repr / containment / iteration --
+    #
+    # Cheap usability dunders. ``len(kg)`` returns entity count,
+    # ``"AcmeCorp" in kg`` checks membership (case-insensitive via
+    # ``_resolve_entity``), ``for label in kg`` iterates entity labels.
+
+    def __repr__(self) -> str:
+        n_entities = len(self._entity_ids)
+        if n_entities == 0:
+            return f"<EntityGraph name={self._name!r} (empty — call build_from_records)>"
+        state = " frozen" if self._frozen else ""
+        snap = f" snapshot={self._snapshot_date!r}" if self._snapshot_date else ""
+        return (
+            f"<EntityGraph name={self._name!r} entities={n_entities} "
+            f"nodes={len(self._nodes)} edges={len(self._edges)}{state}{snap}>"
+        )
+
+    def __len__(self) -> int:
+        """Number of entity nodes in the graph."""
+        return len(self._entity_ids)
+
+    def __contains__(self, entity: object) -> bool:
+        """``"AcmeCorp" in kg`` checks if an entity exists (case-insensitive)."""
+        if not isinstance(entity, str):
+            return False
+        return self._resolve_entity(entity) is not None
+
+    def __iter__(self) -> Iterator[str]:
+        """Iterate over entity labels in build/insertion order."""
+        for nid in self._entity_ids:
+            node = self._nodes.get(nid)
+            if node is not None:
+                yield str(node.get("label", ""))
+
+    @property
+    def build_warnings(self) -> list[str]:
+        """Read-only copy of warnings collected during the most recent build.
+
+        Each warning is a one-line string explaining a potential data-quality
+        issue (high null rates, sentinel zeros, low-cardinality columns, etc.).
+        Surfaced automatically via the ``pydantic_ai_cloudflare.graph`` logger
+        at WARNING level — to see them, run::
+
+            import logging
+            logging.basicConfig(level=logging.WARNING)
+        """
+        return list(self._build_warnings)
+
+    # -- Internal: warning helper --
+
+    def _warn(self, msg: str) -> None:
+        """Record a build-time warning AND emit it to the logger.
+
+        Using this everywhere keeps warnings discoverable: stored on
+        ``self._build_warnings`` (also exposed via :pyattr:`build_warnings`)
+        so they're inspectable after build, *and* logged so they show up
+        in stderr by default.
+        """
+        self._build_warnings.append(msg)
+        logger.warning(msg)
 
     # -- Node/edge helpers --
 
@@ -788,8 +914,13 @@ class EntityGraph:
 
         if self._frozen:
             raise RuntimeError(
-                "Graph is frozen. Use score_one()/score_batch() for new records, "
-                "or call kg.unfreeze() to mutate the graph again."
+                "Cannot rebuild a frozen graph — freeze() locks the topology so "
+                "training-time and inference-time features stay identical. "
+                "Two ways forward:\n"
+                "  • For NEW records (inference): use kg.score_one(record) "
+                "or kg.score_batch(records).\n"
+                "  • To rebuild from scratch (re-training): call kg.unfreeze() "
+                "first, then build_from_records()."
             )
 
         self._outcome_column = outcome_column
@@ -835,7 +966,7 @@ class EntityGraph:
         effective_time_col = time_column or temporal_column
         cutoff_dt: datetime | None = None
         if as_of is not None and effective_time_col is None:
-            self._build_warnings.append(
+            self._warn(
                 "as_of provided without time_column — point-in-time filter not applied. "
                 "Pass time_column='created_at' (or your event-date column) to enable it."
             )
@@ -883,25 +1014,22 @@ class EntityGraph:
                 if total > 0 and zero_count / total >= sentinel_zero_rate:
                     if col not in sentinel_set:
                         sentinel_set.add(col)
-                        msg = (
+                        self._warn(
                             f"Numeric column '{col}': {zero_count}/{total} "
                             f"({zero_count / total:.0%}) values are 0. Treating 0 as "
                             f"missing (excluded from graph) to avoid fake similarity. "
                             f"Pass sentinel_zero_columns=[] to disable."
                         )
-                        self._build_warnings.append(msg)
-                        logger.warning(msg)
 
         # ----- Profile other columns for warnings -----
         if profile:
-            self._build_warnings.extend(
-                _profile_columns_for_warnings(
-                    records,
-                    categorical_columns=categorical_columns,
-                    list_columns=list_columns,
-                    id_column=id_column,
-                )
-            )
+            for w in _profile_columns_for_warnings(
+                records,
+                categorical_columns=categorical_columns,
+                list_columns=list_columns,
+                id_column=id_column,
+            ):
+                self._warn(w)
 
         n_records = len(records)
         log_interval = max(n_records // 10, 100)  # log every 10% or 100 records
@@ -1047,7 +1175,7 @@ class EntityGraph:
                 # Pairwise SIMILAR_TO (still O(n²) — for >5K entities, prefer
                 # using Vectorize and querying it as a separate step).
                 if len(nids) > 5000:
-                    self._build_warnings.append(
+                    self._warn(
                         f"Computing all-pairs similarity over {len(nids)} entities is O(n²) "
                         "(~12M comparisons). Consider compute_similarity=False and using "
                         "Vectorize for similarity queries instead."
@@ -1074,6 +1202,89 @@ class EntityGraph:
         }
 
         return {"nodes": len(self._nodes), "edges": len(self._edges)}
+
+    async def build_from_config(
+        self,
+        records: list[dict[str, Any]],
+        config: GraphConfig,
+    ) -> dict[str, int]:
+        """Build the graph using a :class:`GraphConfig` object.
+
+        Equivalent to ``build_from_records(records, **config.to_kwargs())``
+        but lets callers bundle the 20+ build parameters into one named
+        object — useful for testing, persistence, and CLI tooling.
+
+        Example::
+
+            config = GraphConfig(
+                id_column="account_id",
+                categorical_columns=["industry"],
+                list_columns={"tech": "USES_TECH"},
+                extract_entities=False,
+                compute_similarity=False,
+            )
+            await kg.build_from_config(records, config)
+        """
+        return await self.build_from_records(records, **config.to_kwargs())
+
+    async def quick_build(
+        self,
+        records: list[dict[str, Any]],
+        *,
+        id_column: str | None = None,
+        use_llm: bool = False,
+    ) -> dict[str, int]:
+        """One-line graph builder with sensible defaults — for the 80% use case.
+
+        Auto-profiles the dataset via :func:`profile_data` and turns OFF the
+        expensive options (LLM entity extraction, summarization, all-pairs
+        similarity) by default. Best for fast first results on a CSV — e.g.
+        ML feature work where you'll iterate later. Use
+        :meth:`build_from_records` when you need full control.
+
+        Args:
+            records: List of row dicts (e.g. ``pd.read_csv(...).to_dict("records")``).
+            id_column: Entity ID column. Auto-detected from the records if not
+                provided.
+            use_llm: If True, enables ``extract_entities=True`` and
+                ``compute_similarity=True`` (requires Cloudflare credentials,
+                slower). Default False — pure structural graph.
+
+        Returns:
+            ``{"nodes": int, "edges": int}`` — same as ``build_from_records``.
+
+        Example::
+
+            import pandas as pd
+            from pydantic_ai_cloudflare import EntityGraph
+
+            df = pd.read_csv("customers.csv")
+            kg = EntityGraph()
+            await kg.quick_build(df.to_dict("records"), id_column="customer_id")
+            features = kg.to_feature_dicts()  # 22+ ML features per entity
+
+        See Also:
+            :meth:`build_from_records` — full-control build
+            :meth:`build_from_config` — config-object build
+            :func:`profile_data` — explicit profiling
+        """
+        if not records:
+            return {"nodes": 0, "edges": 0}
+
+        # Lazy import — keeps the data_profiler module out of cold-import paths.
+        from .data_profiler import profile_data
+
+        dd = profile_data(records, id_column=id_column)
+
+        return await self.build_from_records(
+            records,
+            data_dict=dd,
+            extract_entities=use_llm,
+            extract_relationships=False,
+            compute_similarity=use_llm,
+            summarize_text=False,
+            profile=True,
+        )
 
     # -- Parallel LLM extraction helper --
 
@@ -1613,8 +1824,12 @@ class EntityGraph:
         """
         if self._frozen:
             raise RuntimeError(
-                "Cannot add_records to a frozen graph. Use score_one() / "
-                "score_batch() for inference, or kg.unfreeze() to mutate."
+                "Cannot add_records to a frozen graph — freeze() locks the "
+                "topology so adding records would break training/inference parity.\n"
+                "  • For inference on new records: use kg.score_one(record) "
+                "or kg.score_batch(records) (no mutation).\n"
+                "  • To grow the graph: call kg.unfreeze(), add the records, "
+                "then re-freeze."
             )
 
         # Invalidate cached features
@@ -2555,7 +2770,10 @@ class EntityGraph:
         """
         if not self._build_meta:
             raise RuntimeError(
-                "Graph has no build metadata. Call build_from_records() before freeze()."
+                "Cannot resolve record to feature nodes — graph has no build "
+                "metadata. This usually means freeze() was called on an empty "
+                "graph. Call kg.build_from_records(...) (or kg.quick_build(...)) "
+                "BEFORE kg.freeze(...)."
             )
         meta = self._build_meta
         sentinel_set = set(meta.get("sentinel_zero_columns") or [])
@@ -2625,7 +2843,15 @@ class EntityGraph:
             knn_rate_* features for any target_columns set in freeze().
         """
         if not self._frozen:
-            raise RuntimeError("Graph not frozen. Call kg.freeze() first.")
+            raise RuntimeError(
+                "score_one() requires a frozen graph so scoring-time features "
+                "match training-time features (no feature drift).\n"
+                "  • If you're scoring NEW records (inference): call "
+                "kg.freeze(target_columns=[...], k=...) first.\n"
+                "  • If you only need bulk features for already-built entities: "
+                "use kg.compute_features() or kg.to_feature_dicts() instead.\n"
+                "See the 'Freeze for production scoring' section of the README."
+            )
 
         k_use = k if k is not None else self._frozen_k
 

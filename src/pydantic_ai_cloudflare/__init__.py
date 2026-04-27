@@ -12,6 +12,7 @@ from .feature_engine import compute_feature
 from .gateway import GatewayObservability
 from .graph import (
     EntityGraph,
+    GraphConfig,
     KnowledgeGraph,  # backward-compatible alias
     build_temporal_dataset,
 )
@@ -47,6 +48,7 @@ __all__ = [
     "DIYKnowledgeBase",
     # Entity graph (knowledge graph is deprecated alias)
     "EntityGraph",
+    "GraphConfig",
     "KnowledgeGraph",  # backward compat
     "build_temporal_dataset",
     "GraphVisualizer",
@@ -66,4 +68,4 @@ __all__ = [
     "extract_json_from_text",
 ]
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"

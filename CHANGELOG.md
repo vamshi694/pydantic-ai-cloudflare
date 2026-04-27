@@ -2,6 +2,59 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.1 (2026-04-27)
+
+A UX-focused patch release. No breaking changes — all v0.2.0 code continues
+to work. Driven by a first-time-user audit that flagged onboarding friction:
+"powerful but steep learning curve."
+
+### Added
+
+- **`EntityGraph.quick_build()`** — one-line graph builder for the 80% use
+  case. Auto-profiles the dataset and turns OFF expensive options
+  (LLM extraction, all-pairs similarity) by default. Goes from CSV to
+  ML features in 4 lines:
+  ```python
+  kg = EntityGraph()
+  await kg.quick_build(records, id_column="customer_id")
+  features = kg.to_feature_dicts()
+  ```
+- **`GraphConfig` dataclass** — bundle the 20+ parameters of
+  `build_from_records()` into one named object. Exported from the package
+  root. Use with `kg.build_from_config(records, config)`.
+- **`EntityGraph.build_warnings`** — read-only property exposing build-time
+  warnings (high null rates, sentinel zeros, low-cardinality columns)
+  collected during the most recent `build_from_records()` call.
+- **Usable repr / `len` / `in` / iteration** on `EntityGraph`:
+  ```python
+  >>> kg
+  <EntityGraph name='default' entities=10000 nodes=28705 edges=153642>
+  >>> len(kg)
+  10000
+  >>> "AcmeCorp" in kg
+  True
+  >>> for label in kg: ...
+  ```
+
+### Changed
+
+- **Build warnings are now logged automatically** at `WARNING` level via
+  the `pydantic_ai_cloudflare.graph` logger (previously stored silently
+  on `_build_warnings` and only surfaced via `feature_report()`). Users
+  who run `logging.basicConfig(level=logging.WARNING)` will see all
+  data-quality warnings as the build runs.
+- **Better error messages** for the freeze/score lifecycle. The
+  `RuntimeError` raised from `score_one()` on an unfrozen graph now
+  explains the *why* (training/inference parity, no feature drift) and
+  points to alternatives (`compute_features()`, `to_feature_dicts()`)
+  for users who don't actually need freeze. Same treatment for
+  `add_records()`, `build_from_records()`, and the metadata-missing
+  error from `_record_to_feature_nodes()`.
+- **README** restructured for first-time users: new `quick_build()`
+  example at the top of the EntityGraph section, new "Troubleshooting"
+  section covering the 9 most common errors and how to fix them, new
+  `GraphConfig` example.
+
 ## 0.2.0 (2026-04-27)
 
 A correctness + visualization release driven by real testing on customer data.
