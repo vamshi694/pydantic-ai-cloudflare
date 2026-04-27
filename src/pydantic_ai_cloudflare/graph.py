@@ -451,10 +451,19 @@ class EntityGraph:
         self._embedding_model = embedding_model
         self._extraction_model = extraction_model
         self._canonical_map = _build_canonical_lookup(canonical_map or {})
-        self._account_id = resolve_account_id(account_id)
-        self._api_key = resolve_api_token(api_key)
+
+        # Defer credential resolution. Many EntityGraph workflows
+        # (build_from_records with extract_entities=False, build_temporal_dataset
+        # over CSV-only data, freeze/score for pure-structural ML) don't need
+        # to talk to Cloudflare at all. Resolving creds eagerly here breaks
+        # those workflows for users who haven't set CLOUDFLARE_ACCOUNT_ID.
+        # Real API methods call _ensure_creds() lazily before each request.
+        self._account_id_arg = account_id
+        self._api_key_arg = api_key
+        self._account_id: str | None = None
+        self._api_key: str | None = None
+        self._headers: dict[str, str] = {}
         self._timeout = request_timeout
-        self._headers = build_headers(self._api_key)
 
         # Graph storage
         self._nodes: dict[str, dict[str, Any]] = {}
@@ -482,6 +491,11 @@ class EntityGraph:
         self._frozen_target_values: list[str] = []
         self._frozen_k: int = 5
         self._frozen_label_to_nid: dict[str, str] = {}
+        # Snapshot of every feature key produced by to_feature_dicts() at
+        # freeze time. score_one() uses this to emit a feature dict with
+        # the exact same shape as training-time to_ml_dataset() — fixing
+        # the 33-vs-43 feature mismatch that broke ML inference.
+        self._frozen_feature_schema: list[str] = []
 
         # Track the most recent target_columns/k passed to knn_rate_features
         # or to_ml_dataset, so save_features can warn loudly if the caller
@@ -585,6 +599,7 @@ class EntityGraph:
         Returns:
             The generated alias map {alias: canonical}.
         """
+        self._ensure_creds()
         from pydantic import BaseModel as _BM
 
         # Collect unique values from list/categorical columns
@@ -722,7 +737,28 @@ class EntityGraph:
 
     # -- API helpers --
 
+    def _ensure_creds(self) -> None:
+        """Lazily resolve Cloudflare credentials.
+
+        Called by methods that actually need to talk to the Cloudflare API
+        (embeddings, LLM extraction, summarization, ask). For pure-graph
+        workflows (build with ``extract_entities=False``,
+        ``compute_similarity=False``; ``score_one``; ``compute_features``;
+        visualization) credentials are never resolved, so users without
+        ``CLOUDFLARE_ACCOUNT_ID``/``CLOUDFLARE_API_TOKEN`` env vars can
+        still build graphs from CSVs.
+
+        Raises ``CloudflareConfigError`` from ``_auth`` if credentials
+        are still missing when a real API call is about to happen.
+        """
+        if self._account_id and self._api_key:
+            return
+        self._account_id = resolve_account_id(self._account_id_arg)
+        self._api_key = resolve_api_token(self._api_key_arg)
+        self._headers = build_headers(self._api_key)
+
     async def _embed(self, texts: list[str]) -> list[list[float]]:
+        self._ensure_creds()
         all_embs: list[list[float]] = []
         for i in range(0, len(texts), 100):
             batch = texts[i : i + 100]
@@ -740,6 +776,7 @@ class EntityGraph:
         return all_embs
 
     async def _extract_entities(self, text: str) -> list[str]:
+        self._ensure_creds()
         from pydantic import BaseModel
 
         class E(BaseModel):
@@ -772,6 +809,7 @@ class EntityGraph:
         source_entity: str,
     ) -> list[dict[str, str]]:
         """Extract entity-to-entity relationships from text via LLM."""
+        self._ensure_creds()
         from pydantic import BaseModel as _BM
 
         class _Rel(_BM):
@@ -801,6 +839,7 @@ class EntityGraph:
 
     async def _summarize_text(self, text: str, entity_name: str = "") -> str:
         """Summarize a long text column value for an entity."""
+        self._ensure_creds()
         from pydantic import BaseModel
 
         class Summary(BaseModel):
@@ -1469,6 +1508,43 @@ class EntityGraph:
         for nid in self._entity_ids:
             cid = self._communities.get(nid, -1)
             community_sizes[cid] += 1
+
+        # Detect degenerate community structure. Two failure modes both
+        # indicate the same root cause — the graph lacks entity-to-entity
+        # topology so community detection can't find meaningful clusters:
+        #   1. Louvain returned empty {} (no entity-projection edges at all).
+        #      All entities default to community -1.
+        #   2. Louvain ran but produced ~1 community per entity (>=90% unique).
+        # Both cases warn once per build, surfaced via build_warnings /
+        # feature_report so users see *why* their graph is unhelpful.
+        n_entities = len(self._entity_ids)
+        if n_entities >= 5:
+            entity_communities = {
+                self._communities.get(nid, -1) for nid in self._entity_ids
+            }
+            n_unique = len(entity_communities)
+            no_communities_found = (
+                not self._communities
+                or (n_unique == 1 and -1 in entity_communities)
+            )
+            if no_communities_found:
+                self._warn(
+                    f"Community detection found NO communities for "
+                    f"{n_entities} entities — the entity-projection graph "
+                    "has no edges. This usually means the graph lacks "
+                    "entity-to-entity topology (entities don't share enough "
+                    "feature values). Try add_relationship() or pass "
+                    "relationship_columns={col: edge_type} to "
+                    "build_from_records() to encode connections between entities."
+                )
+            elif n_unique / n_entities >= 0.9:
+                self._warn(
+                    f"Community detection produced {n_unique} communities for "
+                    f"{n_entities} entities (~1 per entity) — degenerate. This "
+                    "usually means the graph lacks entity-to-entity topology. "
+                    "Try add_relationship() or pass relationship_columns={col: edge_type} "
+                    "to build_from_records() to encode connections between entities."
+                )
 
         # PageRank
         pr = _pagerank(self._adj, iterations=20)
@@ -2475,6 +2551,7 @@ class EntityGraph:
         # Build context from graph
         context_parts: list[str] = []
 
+        self._ensure_creds()
         # Get entities sorted by pagerank (most important first)
         features = self.compute_features()
         sorted_entities = sorted(
@@ -2745,10 +2822,32 @@ class EntityGraph:
             self._frozen_target_columns = None
 
         self._frozen_label_to_nid = {self._nodes[n]["label"]: n for n in self._entity_ids}
+
+        # Snapshot the feature schema produced by ``to_feature_dicts()`` so
+        # ``score_one()`` can emit features with the *exact same shape* the
+        # training pipeline saw — including degree-by-edge-type fan-outs
+        # (HAS_INDUSTRY_degree, USES_TECH_degree, IN_ARR_RANGE_degree, etc.)
+        # that score_one would otherwise miss. Without this snapshot,
+        # to_ml_dataset() returned 43 features but score_one() only 33,
+        # silently breaking ML inference.
+        self._frozen_feature_schema: list[str] = []
+        try:
+            feats = self.to_feature_dicts()
+            schema_keys: set[str] = set()
+            for entity_feats in feats.values():
+                schema_keys.update(entity_feats.keys())
+            self._frozen_feature_schema = sorted(schema_keys)
+        except Exception as e:
+            logger.warning(
+                f"freeze(): could not snapshot feature schema ({e!r}); "
+                "score_one() may emit fewer features than to_ml_dataset()."
+            )
+
         self._frozen = True
         logger.info(
             f"Graph frozen: {len(self._entity_ids)} entities, "
-            f"{len(self._frozen_target_values)} target values"
+            f"{len(self._frozen_target_values)} target values, "
+            f"{len(self._frozen_feature_schema)} feature columns"
         )
 
     def unfreeze(self) -> None:
@@ -2885,8 +2984,12 @@ class EntityGraph:
         result["unique_neighbors"] = len(record_features)
         result["degree_entity"] = 0
         result["degree_concept"] = 0
-        # Edge type degrees from the implied edges
+        # Edge type degrees from the implied edges. Replays the same
+        # logic build_from_records uses so per-edge-type degree counts
+        # match training-time features.
         meta = self._build_meta
+        sentinel_set = set(meta.get("sentinel_zero_columns") or [])
+
         for col in meta.get("categorical_columns") or []:
             etype = f"HAS_{col.upper()}_degree"
             val = str(record.get(col, "")).strip()
@@ -2899,6 +3002,39 @@ class EntityGraph:
             for item in (x.strip() for x in val.split(",") if x.strip()):
                 if item.lower() not in _NULL_STRINGS:
                     count += 1
+            if count:
+                result[etype] = count
+
+        # Numeric → IN_<COL>_RANGE_degree (was missing in v0.2.0/0.2.1).
+        for col in meta.get("numeric_columns") or []:
+            raw = record.get(col)
+            if raw is None:
+                continue
+            try:
+                num = float(
+                    str(raw)
+                    .replace("$", "")
+                    .replace(",", "")
+                    .replace("M", "e6")
+                    .replace("B", "e9")
+                    .replace("K", "e3")
+                )
+            except (ValueError, TypeError):
+                continue
+            if num == 0 and col in sentinel_set:
+                continue
+            etype = f"IN_{col.upper()}_RANGE_degree"
+            result[etype] = result.get(etype, 0) + 1
+
+        # Relationship → entity-to-entity degrees (e.g. COMPETES_WITH_degree).
+        for col, rel_type in (meta.get("relationship_columns") or {}).items():
+            etype = f"{rel_type}_degree"
+            val = str(record.get(col, "")).strip()
+            count = 0
+            for item in (x.strip() for x in val.split(",") if x.strip()):
+                if item.lower() in _NULL_STRINGS:
+                    continue
+                count += 1
             if count:
                 result[etype] = count
 
@@ -2946,6 +3082,21 @@ class EntityGraph:
             )
 
         result["knn_peers"] = peer_labels
+
+        # Feature-schema parity with training-time to_ml_dataset(). Any
+        # key that was present in to_feature_dicts() at freeze time but
+        # didn't apply to this record gets a 0 default. This is what
+        # eliminates the 33-vs-43 feature mismatch — the trained model
+        # always sees every column it was trained on.
+        for key in self._frozen_feature_schema:
+            if key in ("knn_peers", "knn_peer_votes", "own_values", "knn_rate"):
+                # These are diagnostic/metadata, not numeric features
+                continue
+            if key.startswith("knn_rate_"):
+                # Already filled from _frozen_target_values above
+                continue
+            result.setdefault(key, 0)
+
         return result
 
     async def score_batch(
@@ -3020,6 +3171,33 @@ class EntityGraph:
             else:
                 features_present["structural"].append(k)
 
+        # knn_rate_* features are NOT stored in self._features (they're
+        # computed on-demand by knn_rate_features() / to_ml_dataset() and
+        # returned without being cached). Surface them here so the report
+        # is honest about the feature inventory:
+        #   1. Frozen graph: use _frozen_target_values (the locked catalog)
+        #   2. Recently computed: use _last_knn_target_columns
+        if not features_present["knn_rate"]:
+            knn_rate_keys: list[str] = []
+            if self._frozen_target_values:
+                knn_rate_keys = [f"knn_rate_{v}" for v in self._frozen_target_values]
+            elif self._last_knn_target_columns and self._entity_ids:
+                # Compute the knn_rate output to learn the value catalog
+                # (cheap on a built graph — pure-Python set operations).
+                try:
+                    rates = self.knn_rate_features(
+                        self._last_knn_target_columns,
+                        k=self._last_knn_k or 5,
+                    )
+                    sample_rates = next(iter(rates.values()), {})
+                    knn_rate_keys = [
+                        k for k in sample_rates if k.startswith("knn_rate_")
+                    ]
+                except Exception:
+                    # Don't let a reporting helper break the report.
+                    knn_rate_keys = []
+            features_present["knn_rate"] = sorted(knn_rate_keys)
+
         report: dict[str, Any] = {
             "stats": stats,
             "snapshot_date": self._snapshot_date,
@@ -3060,6 +3238,8 @@ class EntityGraph:
         hops: int = 2,
         include_node_types: list[str] | None = None,
         exclude_node_types: list[str] | None = None,
+        include_raw_data: bool = True,
+        raw_data_max_chars: int | None = 200,
     ) -> dict[str, Any]:
         """Cytoscape.js-compliant graph spec — embeddable in any web UI.
 
@@ -3072,6 +3252,8 @@ class EntityGraph:
             hops=hops,
             include_node_types=include_node_types,
             exclude_node_types=exclude_node_types,
+            include_raw_data=include_raw_data,
+            raw_data_max_chars=raw_data_max_chars,
         )
 
     def to_d3_json(
@@ -3081,10 +3263,17 @@ class EntityGraph:
         max_nodes: int | None = 300,
         focus: str | None = None,
         hops: int = 2,
+        include_raw_data: bool = True,
+        raw_data_max_chars: int | None = 200,
     ) -> dict[str, Any]:
         """D3.js force-graph spec ({nodes:[...], links:[...]})."""
         return self._viz().to_d3_json(
-            color_by=color_by, max_nodes=max_nodes, focus=focus, hops=hops
+            color_by=color_by,
+            max_nodes=max_nodes,
+            focus=focus,
+            hops=hops,
+            include_raw_data=include_raw_data,
+            raw_data_max_chars=raw_data_max_chars,
         )
 
     def to_mermaid(
@@ -3127,6 +3316,8 @@ class EntityGraph:
         include_node_types: list[str] | None = None,
         exclude_node_types: list[str] | None = None,
         layout: str = "cose",
+        include_raw_data: bool = True,
+        raw_data_max_chars: int | None = 200,
     ) -> str:
         """Render to a self-contained interactive HTML file (Cytoscape.js).
 
@@ -3140,6 +3331,10 @@ class EntityGraph:
             include_node_types / exclude_node_types: Type filters.
             layout: Cytoscape layout. "cose" (force, default), "concentric",
                 "breadthfirst", "grid", "circle".
+            include_raw_data: Include source-record data in the click-to-
+                inspect panel. Default True.
+            raw_data_max_chars: Truncate long string values in raw_data
+                (default 200). Set None for legacy v0.2.0 behavior.
 
         Returns:
             The HTML string. Also writes to `path` if provided.
@@ -3154,6 +3349,8 @@ class EntityGraph:
             include_node_types=include_node_types,
             exclude_node_types=exclude_node_types,
             layout=layout,
+            include_raw_data=include_raw_data,
+            raw_data_max_chars=raw_data_max_chars,
         )
 
     def print_report(self) -> None:
@@ -3387,9 +3584,13 @@ def _node2vec_embeddings(
         )
         return {node: model.wv[node].tolist() for node in nodes if node in model.wv}
     except ImportError:
-        logger.warning(
-            "gensim not installed — Node2Vec embeddings disabled. Install with: pip install gensim"
-        )
+        global _GENSIM_WARNED
+        if not _GENSIM_WARNED:
+            logger.warning(
+                "gensim not installed — Node2Vec embeddings disabled. "
+                "Install with: pip install gensim"
+            )
+            _GENSIM_WARNED = True
         return {}  # return empty, don't generate fake embeddings
 
 

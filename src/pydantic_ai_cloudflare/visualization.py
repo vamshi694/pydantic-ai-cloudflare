@@ -183,6 +183,29 @@ def _color_for_edge(etype: str) -> tuple[str, str]:
 # ============================================================
 
 
+def _truncate_raw_data(
+    data: dict[str, Any],
+    *,
+    max_chars: int | None,
+) -> dict[str, Any]:
+    """Return a shallow copy of ``data`` with long string values truncated.
+
+    Used by :meth:`GraphVisualizer.to_cytoscape` to keep visualization
+    payloads small. Only ``str`` values longer than ``max_chars`` are
+    truncated; other types pass through unchanged. ``max_chars=None``
+    means no truncation.
+    """
+    if max_chars is None:
+        return dict(data)
+    out: dict[str, Any] = {}
+    for k, v in data.items():
+        if isinstance(v, str) and len(v) > max_chars:
+            out[k] = v[:max_chars] + "…"
+        else:
+            out[k] = v
+    return out
+
+
 def _select_subgraph(
     kg: EntityGraph,
     *,
@@ -209,6 +232,7 @@ def _select_subgraph(
     skip_types = set(exclude_node_types or [])
 
     selected: set[str] = set()
+    use_default_selection = not focus
 
     if focus:
         resolved = kg._resolve_entity(focus)
@@ -224,7 +248,25 @@ def _select_subgraph(
                             nxt.add(t)
                 selected |= nxt
                 frontier = nxt
-    else:
+            # Isolated focus node — warn but keep the single node so the
+            # caller still sees the entity rather than an empty graph.
+            if len(selected) == 1:
+                logger.warning(
+                    f"focus={focus!r} resolved but has no neighbors within "
+                    f"{hops} hop(s). Returning the single isolated node."
+                )
+        else:
+            # Unresolved focus is the silent-empty bug from CF1 testing.
+            # Fall back to the default selection so users get *something*
+            # and emit a clear warning so they can fix the focus arg.
+            logger.warning(
+                f"focus={focus!r} did not resolve to any entity in the graph. "
+                f"Falling back to default selection (top entities by degree). "
+                f"Pass an entity ID or label that exists in the graph."
+            )
+            use_default_selection = True
+
+    if use_default_selection:
         # Rank entities by degree and take the top
         ranked_entities = sorted(
             entity_ids,
@@ -343,6 +385,8 @@ class GraphVisualizer:
         hops: int = 2,
         include_node_types: list[str] | None = None,
         exclude_node_types: list[str] | None = None,
+        include_raw_data: bool = True,
+        raw_data_max_chars: int | None = 200,
     ) -> dict[str, Any]:
         """Return a Cytoscape.js-compliant graph spec.
 
@@ -355,6 +399,19 @@ class GraphVisualizer:
                                   "color", "weight", "style", ...}}],
               "metadata": {...}
             }
+
+        Args:
+            include_raw_data: If True (default), entity nodes include the
+                full source record under ``data.raw_data`` so the info
+                panel can show full context. Set False to drop it
+                entirely — recommended when serving thousands of nodes
+                where bytes matter.
+            raw_data_max_chars: Truncate long string values inside
+                ``raw_data`` to this many characters with an ``"…"``
+                suffix. Default 200. Set to None to disable truncation
+                (legacy v0.2.0 behavior — can produce 100KB+ payloads
+                when records contain long ``ae_notes`` / description
+                fields).
         """
         selected, edges = _select_subgraph(
             self.kg,
@@ -390,7 +447,11 @@ class GraphVisualizer:
             if mode == "community" and self.kg._communities:
                 data["community"] = self.kg._communities.get(nid, -1)
             if ntype == "entity":
-                data["raw_data"] = node.get("data", {})
+                if include_raw_data:
+                    data["raw_data"] = _truncate_raw_data(
+                        node.get("data", {}),
+                        max_chars=raw_data_max_chars,
+                    )
                 data["size"] = 30  # entities bigger
             else:
                 data["size"] = 16
@@ -473,9 +534,22 @@ class GraphVisualizer:
         max_nodes: int | None = 300,
         focus: str | None = None,
         hops: int = 2,
+        include_raw_data: bool = True,
+        raw_data_max_chars: int | None = 200,
     ) -> dict[str, Any]:
-        """Return a D3.js force-graph spec ({nodes:[...], links:[...]})."""
-        cy = self.to_cytoscape(color_by=color_by, max_nodes=max_nodes, focus=focus, hops=hops)
+        """Return a D3.js force-graph spec ({nodes:[...], links:[...]}).
+
+        See :meth:`to_cytoscape` for ``include_raw_data`` /
+        ``raw_data_max_chars`` semantics — both are forwarded as-is.
+        """
+        cy = self.to_cytoscape(
+            color_by=color_by,
+            max_nodes=max_nodes,
+            focus=focus,
+            hops=hops,
+            include_raw_data=include_raw_data,
+            raw_data_max_chars=raw_data_max_chars,
+        )
         return {
             "nodes": [n["data"] for n in cy["nodes"]],
             "links": [
@@ -664,6 +738,8 @@ class GraphVisualizer:
         include_node_types: list[str] | None = None,
         exclude_node_types: list[str] | None = None,
         layout: str = "cose",
+        include_raw_data: bool = True,
+        raw_data_max_chars: int | None = 200,
     ) -> str:
         """Render the graph as a self-contained interactive HTML file.
 
@@ -680,6 +756,12 @@ class GraphVisualizer:
             layout: Cytoscape layout. "cose" (force-directed, default),
                 "concentric" (community-grouped), "breadthfirst", "grid",
                 "circle", or "klay".
+            include_raw_data: Include source-record data in the click-to-
+                inspect panel. Default True. Set False when serving
+                thousands of nodes to avoid bloating the HTML payload.
+            raw_data_max_chars: Truncate long string values in raw_data
+                to this many characters. Default 200. Set None for the
+                legacy v0.2.0 behavior of dumping full records.
         """
         spec = self.to_cytoscape(
             color_by=color_by,
@@ -688,6 +770,8 @@ class GraphVisualizer:
             hops=hops,
             include_node_types=include_node_types,
             exclude_node_types=exclude_node_types,
+            include_raw_data=include_raw_data,
+            raw_data_max_chars=raw_data_max_chars,
         )
         html_str = _render_html_template(spec, title=title, layout=layout)
         if path:
@@ -712,106 +796,293 @@ _HTML_TEMPLATE = """<!doctype html>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape-cose-bilkent/4.1.0/cytoscape-cose-bilkent.min.js"></script>
 <style>
   :root {
-    --bg: #0f172a;
-    --panel: #1e293b;
+    --bg: #0a0f1e;
+    --panel: #161e2e;
+    --panel-2: #1e293b;
     --panel-border: #334155;
     --text: #e2e8f0;
     --muted: #94a3b8;
+    --muted-2: #64748b;
     --accent: #3b82f6;
+    --accent-2: #60a5fa;
+    --highlight: #fbbf24;
+    --danger: #ef4444;
   }
   * { box-sizing: border-box; }
   html, body {
     margin: 0; padding: 0; height: 100%;
     background: var(--bg); color: var(--text);
-    font: 14px/1.4 -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif;
+    font: 13px/1.45 -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif;
   }
-  #app { display: grid; grid-template-columns: 280px 1fr; height: 100vh; }
+  #app { display: grid; grid-template-columns: 320px 1fr; height: 100vh; }
   #sidebar {
     background: var(--panel); border-right: 1px solid var(--panel-border);
-    padding: 16px; overflow-y: auto;
+    padding: 14px 16px 24px; overflow-y: auto;
   }
-  #sidebar h1 { font-size: 16px; margin: 0 0 16px; letter-spacing: 0.02em; }
-  #sidebar h2 {
-    font-size: 12px; text-transform: uppercase;
-    letter-spacing: 0.08em; color: var(--muted); margin: 18px 0 8px;
+  #sidebar h1 {
+    font-size: 15px; margin: 0 0 4px; letter-spacing: 0.02em;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  #sidebar h1 .badge {
+    background: var(--panel-2); color: var(--muted);
+    font-size: 11px; font-weight: 500; padding: 2px 8px;
+    border-radius: 10px; letter-spacing: 0;
+  }
+  #sidebar .help {
+    color: var(--muted-2); font-size: 11px; margin: 0 0 14px;
+  }
+  details { margin: 14px 0 0; border-top: 1px solid var(--panel-border); }
+  details > summary {
+    cursor: pointer; padding: 10px 0 8px; font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted);
+    list-style: none; display: flex; justify-content: space-between;
+    align-items: center; user-select: none;
+  }
+  details > summary::-webkit-details-marker { display: none; }
+  details > summary::after { content: "\\002B"; color: var(--muted); font-size: 14px; }
+  details[open] > summary::after { content: "\\2212"; }
+  details > summary:hover { color: var(--text); }
+  details > .section-body { padding: 4px 0 8px; }
+  #search {
+    width: 100%; padding: 8px 10px; background: var(--bg);
+    border: 1px solid var(--panel-border); border-radius: 6px;
+    color: var(--text); font-size: 13px; margin-bottom: 8px;
+  }
+  #search:focus {
+    outline: none; border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(59,130,246,0.15);
   }
   #stats div {
     font-size: 12px; color: var(--muted); display: flex;
-    justify-content: space-between; margin-bottom: 4px;
+    justify-content: space-between; margin-bottom: 5px;
   }
-  #stats div span:last-child { color: var(--text); font-weight: 600; }
-  .legend-item { display: flex; align-items: center; margin: 4px 0; font-size: 12px; }
-  .legend-swatch {
-    width: 12px; height: 12px; border-radius: 2px;
-    margin-right: 8px; flex-shrink: 0;
+  #stats div span:last-child { color: var(--text); font-weight: 600; tabular-nums: 1; }
+  #stats div.live span:last-child { color: var(--accent-2); }
+  .filter-controls {
+    display: flex; gap: 4px; margin-bottom: 10px;
   }
-  #search {
-    width: 100%; padding: 8px; background: var(--bg);
-    border: 1px solid var(--panel-border); border-radius: 4px;
-    color: var(--text); font-size: 13px; margin-bottom: 8px;
+  .filter-controls button {
+    flex: 1; background: var(--bg); border: 1px solid var(--panel-border);
+    color: var(--muted); padding: 5px 6px; border-radius: 4px;
+    cursor: pointer; font-size: 11px;
   }
-  #search:focus { outline: none; border-color: var(--accent); }
+  .filter-controls button:hover { border-color: var(--accent); color: var(--text); }
+  .filter-list { display: flex; flex-direction: column; gap: 3px; }
+  .filter-item {
+    display: flex; align-items: center; gap: 8px; cursor: pointer;
+    padding: 4px 6px; border-radius: 4px; font-size: 12px;
+    user-select: none;
+  }
+  .filter-item:hover { background: var(--panel-2); }
+  .filter-item input { margin: 0; cursor: pointer; }
+  .filter-item .swatch {
+    width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0;
+  }
+  .filter-item .swatch.dashed {
+    background-image: linear-gradient(90deg, var(--swatch-color) 50%, transparent 50%);
+    background-size: 4px 100%;
+  }
+  .filter-item .name {
+    flex: 1; color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .filter-item .count { color: var(--muted); font-size: 11px; tabular-nums: 1; }
+  .filter-item.disabled .name,
+  .filter-item.disabled .count {
+    color: var(--muted-2); text-decoration: line-through;
+  }
   .layout-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
-  .layout-buttons button {
+  .layout-buttons button, .display-toggles button {
+    background: var(--bg); border: 1px solid var(--panel-border);
+    color: var(--text); padding: 6px 8px; border-radius: 4px;
+    cursor: pointer; font-size: 11px; transition: border-color 0.1s;
+  }
+  .layout-buttons button:hover, .display-toggles button:hover { border-color: var(--accent); }
+  .layout-buttons button.active, .display-toggles button.active {
+    background: var(--accent); border-color: var(--accent); color: #fff;
+  }
+  .display-toggles { display: flex; flex-direction: column; gap: 4px; }
+  .display-toggles button { text-align: left; }
+  #selection-section { display: none; }
+  #selection-section.visible { display: block; }
+  #selection-section .selection-actions {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 8px;
+  }
+  #selection-section .selection-actions button {
     background: var(--bg); border: 1px solid var(--panel-border);
     color: var(--text); padding: 6px; border-radius: 4px;
     cursor: pointer; font-size: 11px;
   }
-  .layout-buttons button:hover { border-color: var(--accent); }
+  #selection-section .selection-actions button.primary {
+    background: var(--accent); border-color: var(--accent); color: #fff;
+  }
+  #selection-section .selection-actions button:hover { border-color: var(--accent); }
   #cy { width: 100%; height: 100%; background: #020617; }
   #info {
-    position: absolute; right: 16px; top: 16px; max-width: 300px;
+    position: absolute; right: 16px; top: 16px; max-width: 320px;
     background: var(--panel); border: 1px solid var(--panel-border);
-    border-radius: 6px; padding: 12px; display: none;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    border-radius: 8px; padding: 14px; display: none;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.5);
   }
-  #info h3 { margin: 0 0 8px; font-size: 14px; }
+  #info h3 { margin: 0 0 10px; font-size: 14px; }
   #info .row {
-    font-size: 12px; margin-bottom: 4px; display: flex;
+    font-size: 12px; margin-bottom: 5px; display: flex;
     justify-content: space-between; gap: 12px;
   }
   #info .row span:first-child { color: var(--muted); }
   #info pre {
-    font-size: 11px; background: var(--bg); padding: 6px;
-    border-radius: 4px; overflow-x: auto; max-height: 160px;
-    margin: 6px 0 0;
+    font-size: 11px; background: var(--bg); padding: 8px;
+    border-radius: 4px; overflow: auto; max-height: 200px;
+    margin: 8px 0 0; line-height: 1.4;
   }
-  .tag {
-    display: inline-block; background: var(--bg); padding: 2px 6px;
-    border-radius: 3px; font-size: 11px; color: var(--muted);
+  #info .tag {
+    display: inline-block; background: var(--bg); padding: 2px 8px;
+    border-radius: 10px; font-size: 11px; color: var(--muted);
     margin-right: 4px;
+  }
+  #info .close {
+    float: right; background: none; border: none; color: var(--muted);
+    cursor: pointer; padding: 0; font-size: 16px; line-height: 1;
+  }
+  #info .close:hover { color: var(--text); }
+  #toolbar {
+    position: absolute; bottom: 16px; right: 16px; display: flex; gap: 6px;
+    background: var(--panel); border: 1px solid var(--panel-border);
+    border-radius: 8px; padding: 4px;
+  }
+  #toolbar button {
+    background: transparent; border: none; color: var(--muted);
+    padding: 6px 10px; border-radius: 4px; cursor: pointer; font-size: 12px;
+  }
+  #toolbar button:hover { background: var(--panel-2); color: var(--text); }
+  #status-bar {
+    position: absolute; bottom: 16px; left: 336px;
+    background: var(--panel); border: 1px solid var(--panel-border);
+    border-radius: 8px; padding: 6px 12px; font-size: 11px;
+    color: var(--muted); display: none; max-width: 480px;
+  }
+  #status-bar.visible { display: block; }
+  #status-bar .key {
+    font-family: ui-monospace, SF Mono, monospace;
+    background: var(--bg); padding: 1px 5px; border-radius: 3px;
+    margin: 0 2px; color: var(--text); font-size: 10px;
+  }
+  kbd {
+    font-family: ui-monospace, SF Mono, monospace;
+    background: var(--bg); padding: 1px 5px; border-radius: 3px;
+    color: var(--text); font-size: 10px; border: 1px solid var(--panel-border);
   }
 </style>
 </head>
 <body>
 <div id="app">
   <aside id="sidebar">
-    <h1>__TITLE__</h1>
-    <input id="search" type="text" placeholder="Search nodes..." />
-    <h2>Stats</h2>
-    <div id="stats"></div>
-    <h2>Layout</h2>
-    <div class="layout-buttons">
-      <button data-layout="cose-bilkent">Force</button>
-      <button data-layout="concentric">Concentric</button>
-      <button data-layout="breadthfirst">Tree</button>
-      <button data-layout="grid">Grid</button>
-      <button data-layout="circle">Circle</button>
-      <button data-layout="random">Random</button>
-    </div>
-    <h2>Legend</h2>
-    <div id="legend"></div>
+    <h1>__TITLE__ <span class="badge" id="title-badge"></span></h1>
+    <p class="help">
+      <kbd>/</kbd> search · <kbd>Esc</kbd> reset · <kbd>e</kbd> edge labels · <kbd>f</kbd> fit
+    </p>
+    <input id="search" type="text" placeholder="Search nodes..." autocomplete="off" />
+
+    <details open>
+      <summary>Stats</summary>
+      <div class="section-body"><div id="stats"></div></div>
+    </details>
+
+    <details open id="edge-filter-section">
+      <summary>Edge types <span class="counter" data-counter="edge"></span></summary>
+      <div class="section-body">
+        <div class="filter-controls">
+          <button data-action="all" data-target="edge">All</button>
+          <button data-action="none" data-target="edge">None</button>
+        </div>
+        <div class="filter-list" id="edge-filters"></div>
+      </div>
+    </details>
+
+    <details open id="node-filter-section">
+      <summary>Node types <span class="counter" data-counter="node"></span></summary>
+      <div class="section-body">
+        <div class="filter-controls">
+          <button data-action="all" data-target="node">All</button>
+          <button data-action="none" data-target="node">None</button>
+        </div>
+        <div class="filter-list" id="node-filters"></div>
+      </div>
+    </details>
+
+    <details id="community-filter-section" style="display:none">
+      <summary>Communities</summary>
+      <div class="section-body">
+        <div class="filter-controls">
+          <button data-action="all" data-target="community">All</button>
+          <button data-action="none" data-target="community">None</button>
+        </div>
+        <div class="filter-list" id="community-filters"></div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>Display</summary>
+      <div class="section-body">
+        <div class="display-toggles">
+          <button id="toggle-edge-labels">Show edge labels (e)</button>
+          <button id="toggle-hover-highlight" class="active">Highlight on hover</button>
+          <button id="toggle-bold-edges" class="active">Bold edges</button>
+          <button id="toggle-arrows" class="active">Show arrows</button>
+        </div>
+      </div>
+    </details>
+
+    <details>
+      <summary>Layout</summary>
+      <div class="section-body">
+        <div class="layout-buttons">
+          <button data-layout="cose-bilkent" class="active">Force</button>
+          <button data-layout="concentric">Concentric</button>
+          <button data-layout="breadthfirst">Tree</button>
+          <button data-layout="grid">Grid</button>
+          <button data-layout="circle">Circle</button>
+          <button data-layout="random">Random</button>
+        </div>
+      </div>
+    </details>
+
+    <details id="selection-section">
+      <summary>Selection</summary>
+      <div class="section-body">
+        <div id="selection-info"></div>
+        <div class="selection-actions">
+          <button class="primary" id="action-isolate">Isolate</button>
+          <button id="action-clear">Clear</button>
+        </div>
+      </div>
+    </details>
+
+    <details>
+      <summary>Legend</summary>
+      <div class="section-body"><div id="legend"></div></div>
+    </details>
   </aside>
   <div id="cy"></div>
 </div>
-<div id="info"></div>
+<div id="info">
+  <button class="close" id="info-close">&times;</button>
+  <div id="info-body"></div>
+</div>
+<div id="status-bar"></div>
+<div id="toolbar">
+  <button data-toolbar="fit" title="Fit view (f)">Fit</button>
+  <button data-toolbar="reset" title="Reset filters &amp; selection (Esc)">Reset</button>
+</div>
 <script>
 const SPEC = __SPEC__;
 const elements = SPEC.nodes.concat(SPEC.edges);
 
+// ---- Cytoscape construction ----------------------------------------
 const cy = cytoscape({
   container: document.getElementById('cy'),
   elements: elements,
+  wheelSensitivity: 0.2,
   style: [
     {
       selector: 'node',
@@ -828,20 +1099,17 @@ const cy = cytoscape({
         'height': 'data(size)',
         'border-color': '#0f172a',
         'border-width': 2,
+        'transition-property': 'opacity, background-color, border-color, border-width',
+        'transition-duration': '0.12s',
       }
     },
     {
       selector: 'node[type="entity"]',
-      style: {
-        'shape': 'ellipse',
-        'border-color': '#fff',
-        'border-width': 1.5,
-      }
+      style: { 'shape': 'ellipse', 'border-color': '#fff', 'border-width': 2 }
     },
-    {
-      selector: 'node[type="concept"]',
-      style: { 'shape': 'round-rectangle' }
-    },
+    { selector: 'node[type="concept"]', style: { 'shape': 'round-rectangle' } },
+    { selector: 'node[type="entity"][?community]',
+      style: { 'border-color': '#fff', 'border-width': 2 } },
     {
       selector: 'edge',
       style: {
@@ -849,127 +1117,430 @@ const cy = cytoscape({
         'line-color': 'data(color)',
         'target-arrow-color': 'data(color)',
         'target-arrow-shape': 'triangle',
-        'arrow-scale': 0.7,
-        'width': 'mapData(weight, 0, 5, 1, 4)',
-        'opacity': 0.6,
+        'arrow-scale': 0.9,
+        'width': 'mapData(weight, 0, 5, 2.2, 5)',
+        'opacity': 0.78,
         'label': 'data(label)',
         'font-size': 9,
-        'color': '#94a3b8',
+        'color': '#cbd5e1',
         'text-rotation': 'autorotate',
         'text-opacity': 0,
+        'text-background-color': '#020617',
+        'text-background-opacity': 0.85,
+        'text-background-padding': 2,
+        'text-background-shape': 'roundrectangle',
+        'transition-property': 'opacity, line-color, target-arrow-color, width, text-opacity',
+        'transition-duration': '0.12s',
       }
     },
-    {
-      selector: 'edge[style="dashed"]',
-      style: { 'line-style': 'dashed' }
-    },
+    { selector: 'edge[style="dashed"]', style: { 'line-style': 'dashed' } },
+
+    // Display modifiers (toggleable):
+    { selector: '.thin-edges', style: { 'width': 'mapData(weight, 0, 5, 1, 3)', 'opacity': 0.5 } },
+    { selector: '.show-edge-labels', style: { 'text-opacity': 1 } },
+    { selector: '.no-arrows', style: { 'target-arrow-shape': 'none' } },
+
+    // Filtering / hidden state:
+    { selector: '.hidden', style: { 'display': 'none' } },
+
+    // Hover/selection focus mode:
+    { selector: '.faded', style: { 'opacity': 0.08, 'text-opacity': 0 } },
+    { selector: '.highlighted', style: { 'opacity': 1 } },
+    { selector: 'node.highlighted',
+      style: { 'border-color': 'var(--highlight)', 'border-width': 4 } },
+    { selector: 'edge.highlighted',
+      style: { 'width': 'mapData(weight, 0, 5, 3, 6.5)', 'text-opacity': 1 } },
+
+    // Search match (gold glow):
+    { selector: 'node.search-match',
+      style: { 'border-color': '#fbbf24', 'border-width': 5, 'opacity': 1 } },
+
+    // Selected node:
     {
       selector: ':selected',
-      style: {
-        'border-width': 4,
-        'border-color': '#3b82f6',
-        'opacity': 1,
-      }
+      style: { 'border-width': 5, 'border-color': '#3b82f6', 'opacity': 1 }
     },
     {
       selector: 'edge:selected',
-      style: {
-        'line-color': '#3b82f6',
-        'target-arrow-color': '#3b82f6',
-        'opacity': 1,
-        'text-opacity': 1,
-        'width': 3,
-      }
+      style: { 'line-color': '#3b82f6', 'target-arrow-color': '#3b82f6',
+               'opacity': 1, 'text-opacity': 1, 'width': 4 }
     },
-    { selector: '.faded', style: { 'opacity': 0.1 } },
-    { selector: '.highlighted', style: { 'opacity': 1 } },
   ],
   layout: { name: '__LAYOUT__', padding: 30, animate: false, nodeDimensionsIncludeLabels: true }
 });
 
-// Legend
-const legendEl = document.getElementById('legend');
-(SPEC.metadata.legend || []).forEach(item => {
-  const div = document.createElement('div');
-  div.className = 'legend-item';
-  div.innerHTML =
-    `<span class="legend-swatch" style="background:${item.color}"></span>` +
-    `${item.label}`;
-  legendEl.appendChild(div);
+// ---- Data helpers --------------------------------------------------
+const allEdgeTypes = {};
+const allNodeTypes = {};
+const allCommunities = {};
+SPEC.edges.forEach(e => {
+  const t = e.data.label || 'unknown';
+  if (!allEdgeTypes[t]) allEdgeTypes[t] = { count: 0, color: e.data.color || '#94a3b8',
+                                              style: e.data.style || 'solid' };
+  allEdgeTypes[t].count++;
+});
+SPEC.nodes.forEach(n => {
+  const t = n.data.type || 'unknown';
+  if (!allNodeTypes[t]) allNodeTypes[t] = { count: 0, color: n.data.color || '#94a3b8' };
+  allNodeTypes[t].count++;
+  if (n.data.community !== undefined) {
+    const cid = n.data.community;
+    if (!allCommunities[cid]) allCommunities[cid] = { count: 0, color: n.data.color };
+    allCommunities[cid].count++;
+  }
 });
 
-// Stats
-const statsEl = document.getElementById('stats');
+const enabledEdgeTypes = new Set(Object.keys(allEdgeTypes));
+const enabledNodeTypes = new Set(Object.keys(allNodeTypes));
+const enabledCommunities = new Set(Object.keys(allCommunities));
+
+// ---- Filter UI builder --------------------------------------------
+function buildFilterList(containerId, items, enabled, onChange, sortByCount) {
+  const container = document.getElementById(containerId);
+  container.innerHTML = '';
+  const entries = Object.entries(items);
+  if (sortByCount) entries.sort((a, b) => b[1].count - a[1].count);
+  else entries.sort((a, b) => a[0].localeCompare(b[0]));
+  entries.forEach(([key, info]) => {
+    const label = document.createElement('label');
+    label.className = 'filter-item';
+    label.dataset.key = key;
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = enabled.has(key);
+    cb.addEventListener('change', () => {
+      if (cb.checked) enabled.add(key); else enabled.delete(key);
+      label.classList.toggle('disabled', !cb.checked);
+      onChange();
+    });
+    const swatch = document.createElement('span');
+    swatch.className = 'swatch' + (info.style === 'dashed' ? ' dashed' : '');
+    swatch.style.setProperty('--swatch-color', info.color);
+    swatch.style.background = info.color;
+    const name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = key;
+    const count = document.createElement('span');
+    count.className = 'count';
+    count.textContent = info.count;
+    label.appendChild(cb); label.appendChild(swatch);
+    label.appendChild(name); label.appendChild(count);
+    if (!enabled.has(key)) label.classList.add('disabled');
+    container.appendChild(label);
+  });
+}
+
+function applyFilters() {
+  let visibleNodes = 0, visibleEdges = 0;
+  cy.batch(() => {
+    cy.nodes().forEach(n => {
+      const t = n.data('type');
+      const c = n.data('community');
+      const visible = enabledNodeTypes.has(t)
+        && (c === undefined || enabledCommunities.has(String(c)));
+      n.toggleClass('hidden', !visible);
+      if (visible) visibleNodes++;
+    });
+    cy.edges().forEach(e => {
+      const t = e.data('label');
+      const visible = enabledEdgeTypes.has(t)
+        && !e.source().hasClass('hidden') && !e.target().hasClass('hidden');
+      e.toggleClass('hidden', !visible);
+      if (visible) visibleEdges++;
+    });
+  });
+  // Update live stats
+  document.querySelector('#stats div.live[data-stat="visible-nodes"] span:last-child')
+    .textContent = `${visibleNodes} / ${SPEC.metadata.displayed_nodes}`;
+  document.querySelector('#stats div.live[data-stat="visible-edges"] span:last-child')
+    .textContent = `${visibleEdges} / ${SPEC.metadata.displayed_edges}`;
+  if (currentSelection) updateSelectionInfo(currentSelection);
+}
+
+// ---- Build all 3 filter lists --------------------------------------
+buildFilterList('edge-filters', allEdgeTypes, enabledEdgeTypes, applyFilters, true);
+buildFilterList('node-filters', allNodeTypes, enabledNodeTypes, applyFilters, true);
+if (Object.keys(allCommunities).length > 1) {
+  document.getElementById('community-filter-section').style.display = '';
+  buildFilterList('community-filters', allCommunities, enabledCommunities, applyFilters, true);
+}
+
+// All / None buttons
+document.querySelectorAll('.filter-controls button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const target = btn.dataset.target;
+    const allItems =
+      target === 'edge' ? allEdgeTypes :
+      target === 'node' ? allNodeTypes : allCommunities;
+    const set =
+      target === 'edge' ? enabledEdgeTypes :
+      target === 'node' ? enabledNodeTypes : enabledCommunities;
+    set.clear();
+    if (btn.dataset.action === 'all') Object.keys(allItems).forEach(k => set.add(k));
+    const containerId =
+      target === 'edge' ? 'edge-filters' :
+      target === 'node' ? 'node-filters' : 'community-filters';
+    document.querySelectorAll(`#${containerId} input`).forEach(cb => {
+      cb.checked = set.has(cb.parentElement.dataset.key);
+      cb.parentElement.classList.toggle('disabled', !cb.checked);
+    });
+    applyFilters();
+  });
+});
+
+// ---- Title badge + stats ------------------------------------------
 const stats = SPEC.metadata;
+document.getElementById('title-badge').textContent =
+  `${stats.displayed_nodes} nodes · ${stats.displayed_edges} edges`;
+
+const statsEl = document.getElementById('stats');
 const statRows = [
-  ['Total nodes', stats.total_nodes],
-  ['Total edges', stats.total_edges],
-  ['Displayed nodes', stats.displayed_nodes],
-  ['Displayed edges', stats.displayed_edges],
-  ['Color by', stats.color_by],
-  ['Snapshot', stats.snapshot_date || 'live'],
-  ['Frozen', stats.frozen ? 'yes' : 'no'],
+  ['Visible nodes', `${stats.displayed_nodes} / ${stats.displayed_nodes}`, true, 'visible-nodes'],
+  ['Visible edges', `${stats.displayed_edges} / ${stats.displayed_edges}`, true, 'visible-edges'],
+  ['Total in graph', `${stats.total_nodes} / ${stats.total_edges}`, false],
+  ['Color by', stats.color_by, false],
+  ['Snapshot', stats.snapshot_date || 'live', false],
+  ['Frozen', stats.frozen ? 'yes' : 'no', false],
 ];
-statRows.forEach(([label, value]) => {
+statRows.forEach(([label, value, isLive, statKey]) => {
   const div = document.createElement('div');
+  if (isLive) { div.className = 'live'; div.dataset.stat = statKey; }
   div.innerHTML = `<span>${label}</span><span>${value}</span>`;
   statsEl.appendChild(div);
 });
 
-// Layout switching
+// ---- Legend --------------------------------------------------------
+const legendEl = document.getElementById('legend');
+(SPEC.metadata.legend || []).forEach(item => {
+  const div = document.createElement('div');
+  div.className = 'filter-item';
+  div.innerHTML =
+    `<span class="swatch" style="background:${item.color}"></span>` +
+    `<span class="name">${escapeHtml(item.label)}</span>`;
+  legendEl.appendChild(div);
+});
+
+// ---- Layout switching ---------------------------------------------
 document.querySelectorAll('[data-layout]').forEach(btn => {
   btn.addEventListener('click', () => {
+    document.querySelectorAll('[data-layout]').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
     cy.layout({
-      name: btn.dataset.layout,
-      padding: 30,
-      animate: true,
-      animationDuration: 500,
+      name: btn.dataset.layout, padding: 30,
+      animate: true, animationDuration: 500,
+      nodeDimensionsIncludeLabels: true,
     }).run();
   });
 });
 
-// Search
-const searchEl = document.getElementById('search');
-searchEl.addEventListener('input', () => {
-  const q = searchEl.value.toLowerCase().trim();
-  if (!q) {
-    cy.elements().removeClass('faded').removeClass('highlighted');
-    return;
-  }
-  const matches = cy.nodes().filter(n => n.data('label').toLowerCase().includes(q));
-  cy.elements().addClass('faded');
-  matches.removeClass('faded').addClass('highlighted');
-  matches.connectedEdges().removeClass('faded');
-  matches.neighborhood().removeClass('faded');
+// ---- Display toggles ----------------------------------------------
+function toggleClass(btnId, cls, target) {
+  const btn = document.getElementById(btnId);
+  btn.addEventListener('click', () => {
+    btn.classList.toggle('active');
+    const on = btn.classList.contains('active');
+    cy.elements()[on ? 'addClass' : 'removeClass'](cls);
+  });
+}
+// Edge labels: opt-in
+const edgeLabelBtn = document.getElementById('toggle-edge-labels');
+edgeLabelBtn.addEventListener('click', () => {
+  edgeLabelBtn.classList.toggle('active');
+  cy.elements().toggleClass('show-edge-labels', edgeLabelBtn.classList.contains('active'));
+});
+// Hover highlight (a behavior toggle, not a class). Default ON.
+let hoverHighlightOn = true;
+document.getElementById('toggle-hover-highlight').addEventListener('click', (e) => {
+  hoverHighlightOn = !hoverHighlightOn;
+  e.currentTarget.classList.toggle('active', hoverHighlightOn);
+  if (!hoverHighlightOn) clearFocusMode();
+});
+// Bold edges: default ON. When OFF, apply .thin-edges class.
+const boldBtn = document.getElementById('toggle-bold-edges');
+boldBtn.addEventListener('click', () => {
+  boldBtn.classList.toggle('active');
+  const on = boldBtn.classList.contains('active');
+  cy.elements()[on ? 'removeClass' : 'addClass']('thin-edges');
+});
+// Arrows: default ON.
+const arrowBtn = document.getElementById('toggle-arrows');
+arrowBtn.addEventListener('click', () => {
+  arrowBtn.classList.toggle('active');
+  const on = arrowBtn.classList.contains('active');
+  cy.elements()[on ? 'removeClass' : 'addClass']('no-arrows');
 });
 
-// Info panel on node click
+// ---- Focus mode (hover + isolation) -------------------------------
+function focusOn(node) {
+  const others = cy.elements().not(node).not(node.neighborhood());
+  others.addClass('faded');
+  node.neighborhood().removeClass('faded');
+  node.addClass('highlighted');
+  node.connectedEdges().addClass('highlighted');
+}
+function clearFocusMode() {
+  cy.elements().removeClass('faded').removeClass('highlighted');
+}
+
+cy.on('mouseover', 'node', (evt) => {
+  if (!hoverHighlightOn || isolatedSubgraph) return;
+  focusOn(evt.target);
+});
+cy.on('mouseout', 'node', () => {
+  if (!hoverHighlightOn || isolatedSubgraph) return;
+  if (!currentSelection) clearFocusMode();
+  else focusOn(currentSelection);
+});
+
+// ---- Selection / isolation ----------------------------------------
+let currentSelection = null;
+let isolatedSubgraph = null;
 const infoEl = document.getElementById('info');
-cy.on('tap', 'node', (evt) => {
-  const node = evt.target;
+const infoBody = document.getElementById('info-body');
+const selectionSection = document.getElementById('selection-section');
+
+function updateSelectionInfo(node) {
   const data = node.data();
   let html = `<h3>${escapeHtml(data.label)}</h3>`;
   html += `<div class="row"><span>Type</span><span>${escapeHtml(data.type)}</span></div>`;
-  if (data.community !== undefined) {
+  if (data.community !== undefined)
     html += `<div class="row"><span>Community</span><span>${data.community}</span></div>`;
-  }
   html += `<div class="row"><span>Connections</span><span>${node.degree()}</span></div>`;
+  // Group connections by edge type
+  const byType = {};
+  node.connectedEdges().forEach(e => {
+    const t = e.data('label');
+    byType[t] = (byType[t] || 0) + 1;
+  });
+  const tags = Object.entries(byType)
+    .sort((a, b) => b[1] - a[1])
+    .map(([t, c]) => `<span class="tag">${escapeHtml(t)} (${c})</span>`)
+    .join(' ');
+  if (tags) html += `<div style="margin: 8px 0">${tags}</div>`;
   if (data.raw_data && Object.keys(data.raw_data).length > 0) {
     html += `<pre>${escapeHtml(JSON.stringify(data.raw_data, null, 2))}</pre>`;
   }
-  infoEl.innerHTML = html;
+  infoBody.innerHTML = html;
   infoEl.style.display = 'block';
+
+  document.getElementById('selection-info').innerHTML =
+    `<strong>${escapeHtml(data.label)}</strong><br/>` +
+    `<span style="color:var(--muted);font-size:11px">` +
+    `${node.degree()} connections · ${data.type}</span>`;
+  selectionSection.classList.add('visible');
+  selectionSection.open = true;
+}
+
+cy.on('tap', 'node', (evt) => {
+  currentSelection = evt.target;
+  if (hoverHighlightOn && !isolatedSubgraph) focusOn(currentSelection);
+  updateSelectionInfo(currentSelection);
 });
+
 cy.on('tap', (evt) => {
-  if (evt.target === cy) infoEl.style.display = 'none';
+  if (evt.target === cy && !isolatedSubgraph) {
+    currentSelection = null;
+    infoEl.style.display = 'none';
+    selectionSection.classList.remove('visible');
+    clearFocusMode();
+  }
 });
+
+// Isolate: hide everything except the selected node + its k-hop neighborhood.
+document.getElementById('action-isolate').addEventListener('click', () => {
+  if (!currentSelection) return;
+  const keep = currentSelection.closedNeighborhood();
+  cy.elements().not(keep).addClass('hidden');
+  isolatedSubgraph = currentSelection;
+  setStatus(
+    `Isolated <strong>${escapeHtml(currentSelection.data('label'))}</strong>. ` +
+    `Press <kbd>Esc</kbd> or click <strong>Reset</strong> to restore.`
+  );
+});
+document.getElementById('action-clear').addEventListener('click', () => clearAll());
+document.getElementById('info-close').addEventListener('click', () => {
+  infoEl.style.display = 'none'; currentSelection = null;
+  selectionSection.classList.remove('visible'); clearFocusMode();
+});
+
+// ---- Search --------------------------------------------------------
+const searchEl = document.getElementById('search');
+searchEl.addEventListener('input', () => {
+  const q = searchEl.value.toLowerCase().trim();
+  cy.elements().removeClass('faded').removeClass('search-match').removeClass('highlighted');
+  if (!q) { setStatus(''); return; }
+  const matches = cy.nodes().filter(n =>
+    !n.hasClass('hidden') && n.data('label').toLowerCase().includes(q)
+  );
+  if (matches.length === 0) {
+    setStatus(`No nodes matching <strong>${escapeHtml(q)}</strong>`);
+    return;
+  }
+  cy.elements().addClass('faded');
+  matches.removeClass('faded').addClass('search-match');
+  matches.connectedEdges().removeClass('faded').addClass('highlighted');
+  matches.neighborhood().removeClass('faded');
+  setStatus(
+    `${matches.length} match${matches.length === 1 ? '' : 'es'} for ` +
+    `<strong>${escapeHtml(q)}</strong>. Press <kbd>Esc</kbd> to clear.`
+  );
+});
+
+// ---- Toolbar -------------------------------------------------------
+document.querySelectorAll('[data-toolbar]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (btn.dataset.toolbar === 'fit') cy.fit(undefined, 30);
+    else if (btn.dataset.toolbar === 'reset') clearAll();
+  });
+});
+
+// ---- Status bar ----------------------------------------------------
+const statusBar = document.getElementById('status-bar');
+function setStatus(msg) {
+  if (!msg) { statusBar.classList.remove('visible'); statusBar.innerHTML = ''; return; }
+  statusBar.innerHTML = msg;
+  statusBar.classList.add('visible');
+}
+
+// ---- Reset ---------------------------------------------------------
+function clearAll() {
+  searchEl.value = '';
+  cy.elements().removeClass('hidden').removeClass('faded')
+    .removeClass('search-match').removeClass('highlighted');
+  isolatedSubgraph = null;
+  currentSelection = null;
+  infoEl.style.display = 'none';
+  selectionSection.classList.remove('visible');
+  // Re-enable all filters
+  Object.keys(allEdgeTypes).forEach(k => enabledEdgeTypes.add(k));
+  Object.keys(allNodeTypes).forEach(k => enabledNodeTypes.add(k));
+  Object.keys(allCommunities).forEach(k => enabledCommunities.add(k));
+  document.querySelectorAll('.filter-list input[type="checkbox"]').forEach(cb => {
+    cb.checked = true; cb.parentElement.classList.remove('disabled');
+  });
+  applyFilters();
+  setStatus('');
+}
+
+// ---- Keyboard shortcuts -------------------------------------------
+document.addEventListener('keydown', (e) => {
+  if (e.target === searchEl) {
+    if (e.key === 'Escape') { searchEl.value = ''; searchEl.blur();
+      cy.elements().removeClass('faded').removeClass('search-match'); setStatus(''); }
+    return;
+  }
+  if (e.key === '/') { e.preventDefault(); searchEl.focus(); searchEl.select(); }
+  else if (e.key === 'Escape') clearAll();
+  else if (e.key === 'f') cy.fit(undefined, 30);
+  else if (e.key === 'e') edgeLabelBtn.click();
+});
+
+// Prime the live counts.
+applyFilters();
 
 function escapeHtml(s) {
   if (s == null) return '';
-  const map = {
-    '&': '&amp;', '<': '&lt;', '>': '&gt;',
-    '"': '&quot;', "'": '&#39;',
-  };
+  const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
   return String(s).replace(/[&<>"']/g, c => map[c]);
 }
 </script>

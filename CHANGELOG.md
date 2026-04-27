@@ -2,6 +2,118 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.2 (2026-04-27)
+
+A bugfix release driven by real CF1 production data. Fixes 8 issues
+surfaced during field testing — most critically `score_one()` was
+emitting fewer features than `to_ml_dataset()`, silently breaking the
+freeze/score pipeline that v0.2.0 was built around.
+
+No breaking changes. All v0.2.1 code continues to work.
+
+### Fixed (production blockers)
+
+- **`score_one()` feature parity with `to_ml_dataset()`** — v0.2.1
+  emitted 33 features per record while `to_ml_dataset()` produced 43,
+  silently breaking ML inference (the trained model expected 43
+  columns). `freeze()` now snapshots the full feature schema produced
+  by `to_feature_dicts()`, and `score_one()` fills in any missing keys
+  with 0. Adds the missing `IN_<COL>_RANGE_degree` (numeric) and
+  `<REL_TYPE>_degree` (relationship) features that v0.2.1 only emitted
+  for categorical and list columns.
+- **`build_temporal_dataset()` no longer requires Cloudflare
+  credentials** when LLM features are disabled. `EntityGraph.__init__`
+  now defers credential resolution until the first real API call (via
+  `_ensure_creds()`), so pure-structural workflows over CSVs work
+  out-of-the-box without `CLOUDFLARE_ACCOUNT_ID`/`CLOUDFLARE_API_TOKEN`
+  env vars. Real API calls (LLM extraction, embeddings, ask, etc.)
+  still raise a clear `CloudflareConfigError` with the same message as
+  before.
+- **gensim "not installed" warning fires once per process** instead of
+  3+ times per build. The module-level `_GENSIM_WARNED` flag was dead
+  code — now correctly gates the warning at the only emission site.
+- **`feature_report()` now lists `knn_rate_*` features.** v0.2.1 left
+  this section empty because `knn_rate_*` features live in the
+  return value of `knn_rate_features()` / `to_ml_dataset()` and never
+  populate `self._features`. Now expanded from `_frozen_target_values`
+  (frozen graph) or `_last_knn_target_columns` (after `to_ml_dataset()`).
+- **Degenerate community detection now warns explicitly.** When Louvain
+  produces ~1 community per entity (or 0 communities at all), the build
+  emits a clear warning explaining the cause (insufficient
+  entity-to-entity topology) and pointing to `add_relationship()` /
+  `relationship_columns` as the fix. Surfaced via `build_warnings`,
+  the logger, and `feature_report()`.
+
+### Changed (HTML viz UX overhaul)
+
+`render_html()` was hard to read on graphs with many edges. Total
+rebuild of the in-page UX so users can actually understand large
+graphs without leaning on click-to-inspect.
+
+- **Edge-type filter checkboxes.** New "Edge types" section in the
+  side panel with a checkbox per edge type (HAS_PRODUCT,
+  COMPETES_WITH, USES_TECH, IN_<COL>_RANGE, etc.) showing color
+  swatch and edge count. Click to show/hide an entire edge type.
+  "All" / "None" buttons for bulk toggle.
+- **Node-type filter checkboxes.** Same treatment for entity / concept
+  / list / range / categorical node types — toggle whole categories
+  on/off.
+- **Community filter checkboxes** (when `color_by="community"`).
+- **Click-to-isolate.** Click any node, an "Isolate" button appears in
+  the side panel — hides everything except the selected node and its
+  closed neighborhood. "Clear" / `Esc` / Reset toolbar button restores
+  the full view.
+- **Hover highlighting** (default ON, toggleable). Hovering a node
+  fades unrelated nodes/edges to 8% opacity and highlights neighbors
+  + connecting edges with the gold accent. Edge labels appear on the
+  highlighted edges.
+- **Edge label toggle** (`e` key). Show/hide labels on every edge.
+- **Bolder edges by default** — width 2.2-5px (was 1-4px), opacity
+  0.78 (was 0.6) so the structure is readable at a glance. Toggle to
+  thin mode if you prefer.
+- **Arrow toggle** for directional edge types.
+- **Live "X / Y visible"** counts in the Stats section update as
+  filters change.
+- **Search-match glow.** Matching nodes get a gold border, neighbors
+  stay bright, the rest fades — works alongside filters and isolation.
+- **Selection panel.** Info panel shows connections grouped by edge
+  type ("HAS_PRODUCT (3) · COMPETES_WITH (1) · USES_TECH (5)") and
+  has a close button.
+- **Status bar** shows transient feedback ("Isolated AcmeCorp", "3
+  matches for 'zscaler'") with `Esc` to clear.
+- **Toolbar** with Fit / Reset buttons in the corner.
+- **Keyboard shortcuts**: `/` focuses search, `Esc` resets all, `e`
+  toggles edge labels, `f` fits view. Help line shown in the side
+  panel header.
+- **Wider sidebar** (320px from 280px) and collapsible
+  `<details>`-based sections so the panel stays organized as it grows.
+
+No API change for `kg.render_html(...)` — every existing arg still
+works. The improvements are entirely in the rendered HTML/JS.
+
+### Fixed (UX)
+
+- **`to_cytoscape(focus="UnknownEntity", ...)` no longer returns an
+  empty graph.** The unresolved-focus path silently produced
+  `{nodes: [], edges: []}` in v0.2.1. Now logs a warning and falls
+  back to the default top-N-by-degree selection so users see *something*
+  and can fix their focus argument. Isolated focus nodes (no neighbors
+  within the hop budget) also warn.
+- **HTML/D3/Cytoscape output truncates long string fields by default.**
+  v0.2.1 dumped the full source record into every entity node's
+  `raw_data`, producing 100KB+ payloads when records contained long
+  `ae_notes` / description fields. New `raw_data_max_chars=200`
+  default truncates with an ellipsis. New `include_raw_data=False`
+  drops the field entirely. Set `raw_data_max_chars=None` for the
+  legacy v0.2.0 behavior.
+- **`generate_feature_from_text()` now reports its decision.** New
+  `verbose=True` returns the chosen computation type, target value,
+  and reference filter alongside the feature dict so you can audit
+  what the LLM did. Always logs a WARNING when ≥80% of values are
+  identical (a sure sign the LLM picked the wrong computation and the
+  feature is degenerate). Default return shape unchanged
+  (`dict[entity_label, float]`).
+
 ## 0.2.1 (2026-04-27)
 
 A UX-focused patch release. No breaking changes — all v0.2.0 code continues

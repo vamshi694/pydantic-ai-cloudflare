@@ -102,20 +102,47 @@ async def generate_feature_from_text(
     model: str = "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
     account_id: str | None = None,
     api_key: str | None = None,
-) -> dict[str, float]:
+    verbose: bool = False,
+    degenerate_threshold: float = 0.8,
+) -> dict[str, float] | dict[str, Any]:
     """Generate a feature from a natural language description.
 
     Uses one LLM call to parse the description into a computation
     spec, then executes it against the graph (no LLM per row).
 
+    The library logs a WARNING if more than ``degenerate_threshold`` of
+    the values come out identical (default 80%) — an indicator that the
+    LLM picked an inappropriate computation type or filter and the
+    feature is uninformative for ML.
+
     Args:
         graph: A KnowledgeGraph instance.
         description: Natural language feature description.
         model: Workers AI model for parsing.
+        verbose: If True, return a structured dict including the chosen
+            computation type, target value, filter, and the feature dict
+            — so you can inspect what the LLM actually decided. Default
+            False (legacy ``dict[entity_label, float]`` return).
+        degenerate_threshold: Trigger a "degenerate feature" warning if
+            this fraction or more of the entity values are identical.
+            Default 0.8 (80%). Set to 1.0 to disable.
 
     Returns:
-        {entity_label: float} for every entity.
+        With ``verbose=False`` (default): ``dict[entity_label, float]``.
+
+        With ``verbose=True``: ``{
+            "feature": dict[entity_label, float],
+            "feature_name": str,
+            "computation_type_used": str,
+            "node_type": str,
+            "target_value": str,
+            "reference_filter": dict[str, str],
+            "degenerate": bool,
+        }``
     """
+    # Lazy import — avoids circular imports and keeps cold-import cost low.
+    from collections import Counter
+
     from pydantic import BaseModel
 
     from .structured import cf_structured
@@ -141,6 +168,20 @@ async def generate_feature_from_text(
         reference_filter_column: str  # column name for filter, empty if not needed
         reference_filter_value: str  # value for filter, empty if not needed
 
+    # Resolve creds the same way the graph does (lazy if available).
+    resolved_account = account_id
+    resolved_token = api_key
+    if not resolved_account and hasattr(graph, "_ensure_creds"):
+        try:
+            graph._ensure_creds()
+            resolved_account = graph._account_id
+            resolved_token = graph._api_key
+        except Exception:
+            pass
+    if not resolved_account:
+        resolved_account = getattr(graph, "_account_id", None)
+        resolved_token = getattr(graph, "_api_key", None)
+
     spec = await cf_structured(
         f"Parse this feature description into a computation spec.\n\n"
         f"Description: {description}\n\n"
@@ -157,8 +198,8 @@ async def generate_feature_from_text(
         f"- co_occurrence_lift: statistical lift with a value\n",
         FeatureSpec,
         model=model,
-        account_id=account_id or graph._account_id,
-        api_key=api_key or graph._api_key,
+        account_id=resolved_account,
+        api_key=resolved_token,
         max_tokens=512,
     )
 
@@ -166,13 +207,45 @@ async def generate_feature_from_text(
     if spec.reference_filter_column and spec.reference_filter_value:
         ref_filter = {spec.reference_filter_column: spec.reference_filter_value}
 
-    return compute_feature(
+    feat = compute_feature(
         graph,
         computation=spec.computation,
         node_type=spec.node_type,
         target_value=spec.target_value,
         reference_filter=ref_filter,
     )
+
+    # Degenerate-output detection: warn loudly when most/all values are
+    # identical (a sure sign the LLM picked the wrong computation/filter
+    # and the feature is useless for ML).
+    degenerate = False
+    if feat:
+        counts = Counter(feat.values())
+        most_common_count = counts.most_common(1)[0][1]
+        share = most_common_count / len(feat)
+        if share >= degenerate_threshold:
+            degenerate = True
+            logger.warning(
+                f"generate_feature_from_text({description!r}): "
+                f"{most_common_count}/{len(feat)} ({share:.0%}) values are identical "
+                f"— degenerate feature. The LLM chose computation="
+                f"{spec.computation!r}, node_type={spec.node_type!r}, "
+                f"target_value={spec.target_value!r}, "
+                f"reference_filter={ref_filter!r}. Pass verbose=True to "
+                f"inspect the spec and consider rephrasing the description."
+            )
+
+    if verbose:
+        return {
+            "feature": feat,
+            "feature_name": spec.feature_name,
+            "computation_type_used": spec.computation,
+            "node_type": spec.node_type,
+            "target_value": spec.target_value,
+            "reference_filter": ref_filter,
+            "degenerate": degenerate,
+        }
+    return feat
 
 
 # ============================================================

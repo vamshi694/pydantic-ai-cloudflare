@@ -1,154 +1,206 @@
 # pydantic-ai-cloudflare
 
-**The Python toolkit for AI agents, structured output, RAG, and knowledge graphs — powered by Cloudflare.**
+**One Python toolkit for the entire Cloudflare AI stack — structured output, web research, RAG, knowledge graphs, persistence, and observability — wired into PydanticAI.**
 
 [![PyPI](https://img.shields.io/pypi/v/pydantic-ai-cloudflare)](https://pypi.org/project/pydantic-ai-cloudflare/)
 [![Python](https://img.shields.io/pypi/pyversions/pydantic-ai-cloudflare)](https://pypi.org/project/pydantic-ai-cloudflare/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-153%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-232%20passing-brightgreen)](tests/)
 
 ```bash
 pip install pydantic-ai-cloudflare
 ```
 
-### What you can do with this library
-
 ```python
-# 1. AI agents with structured output (all 6 Workers AI models)
-from pydantic_ai_cloudflare import cf_structured_sync
-result = cf_structured_sync("Analyze this company", MySchema, model="@cf/qwen/qwen3-30b-a3b-fp8")
-
-# 2. Browse the web, extract structured data
-from pydantic_ai_cloudflare import BrowserRunToolset
-tools = BrowserRunToolset()
-data = await tools._extract("https://example.com", "Extract pricing plans")
-
-# 3. RAG in 4 lines (managed or DIY)
-from pydantic_ai_cloudflare import KnowledgeBase
-kb = KnowledgeBase("my-docs")
-answer = await kb.ask("How does caching work?")
-
-# 4. Knowledge graphs for ML feature engineering (4 lines, CSV → features)
-from pydantic_ai_cloudflare import EntityGraph
-kg = EntityGraph()
-await kg.quick_build(records, id_column="account_id")  # auto-profile, structural-only
-features = kg.to_feature_dicts()                       # 29 ML features per entity
-recs = kg.recommend("Acct A", ["products"])             # peer-based recommendations
-
-# 5. Zero-config observability (every LLM call logged via AI Gateway)
-from pydantic_ai_cloudflare import GatewayObservability
-logs = await GatewayObservability().get_logs()
+from pydantic_ai_cloudflare import cloudflare_agent, EntityGraph, KnowledgeBase
 ```
-
-### At a glance
-
-| Capability | What it does | Free tier? |
-|-----------|-------------|:---:|
-| **`cf_structured()`** | Complex nested Pydantic schemas → validated output on ALL Workers AI models | Yes |
-| **`BrowserRunToolset`** | Browse, scrape, extract, crawl any website (headless Chrome on edge) | Yes |
-| **`KnowledgeBase`** | Managed RAG with hybrid search + BM25 + reranking | Yes |
-| **`DIYKnowledgeBase`** | Ingest URLs/files/folders → chunk → embed → Vectorize → search + rerank | Yes |
-| **`EntityGraph`** | Peer-adoption features + entity relationships from tabular data | Local |
-| **`cloudflare_agent()`** | One-liner PydanticAI agent wired to Workers AI | Yes |
-| **`D1MessageHistory`** | Conversation persistence across sessions | Yes |
-| **`GatewayObservability`** | Auto-logging, cost tracking, analytics for every LLM call | Yes |
-| **`list_models()`** | Browse 9 Workers AI models, get recommendations by task | — |
 
 ---
 
-## What Cloudflare Already Has
+## Why this library?
 
-Cloudflare provides a complete AI infrastructure stack — **all with free tiers**:
+Cloudflare has built a complete AI platform — Workers AI (20+ models), Browser Run, Vectorize, AI Search, AI Gateway, D1 — all with generous free tiers and edge latency. **There was no Python SDK that connected it to PydanticAI**, so building agents on Cloudflare meant duct-taping HTTP calls, normalizing model quirks by hand, and writing your own RAG pipeline.
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    CLOUDFLARE AI INFRASTRUCTURE                     │
-├─────────────────┬───────────────────┬───────────────────────────────┤
-│                 │                   │                               │
-│  ┌───────────┐  │  ┌─────────────┐  │  ┌──────────────────────────┐ │
-│  │Workers AI │  │  │ Browser Run │  │  │      AI Gateway          │ │
-│  │           │  │  │             │  │  │                          │ │
-│  │ 20+ LLMs │  │  │  Headless   │  │  │  Logging · Analytics     │ │
-│  │ Embedding │  │  │  Chrome on  │  │  │  Cost tracking · Cache   │ │
-│  │ Free tier │  │  │  the edge   │  │  │  Rate limiting           │ │
-│  └───────────┘  │  └─────────────┘  │  └──────────────────────────┘ │
-│                 │                   │                               │
-│  ┌───────────┐  │  ┌─────────────┐  │  ┌──────────────────────────┐ │
-│  │ Vectorize │  │  │     D1      │  │  │        R2                │ │
-│  │           │  │  │             │  │  │                          │ │
-│  │  Vector   │  │  │ Serverless  │  │  │  Object storage          │ │
-│  │  database │  │  │   SQLite    │  │  │  Zero egress fees        │ │
-│  │  for RAG  │  │  │   5GB free  │  │  │  10GB free               │ │
-│  └───────────┘  │  └─────────────┘  │  └──────────────────────────┘ │
-│                 │                   │                               │
-└─────────────────┴───────────────────┴───────────────────────────────┘
-```
+This library closes that gap with **type-safe, batteries-included primitives** for the four things people actually build:
 
-**The problem**: There's no Python SDK that connects PydanticAI to any of this. Until now.
+1. **Agents & structured output** that works reliably on every Workers AI model
+2. **Web research** with the Browser Run toolset (browse, extract, crawl, scrape)
+3. **RAG** — both managed (AI Search) and DIY (Vectorize + reranking)
+4. **Entity graphs from tabular data** — peer-adoption ML features, relationships, interactive visualization
 
-## What This Library Does
+Plus persistence (D1), observability (AI Gateway), and a model catalog with recommendations.
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│                     pydantic-ai-cloudflare                           │
-│                                                                      │
-│  ┌──────────────┐  ┌──────────────────┐  ┌───────────────────────┐  │
-│  │              │  │                  │  │                       │  │
-│  │ cloudflare_  │  │ BrowserRun       │  │ VectorizeToolset      │  │
-│  │ agent()      │  │ Toolset          │  │                       │  │
-│  │              │  │                  │  │ search_knowledge()    │  │
-│  │ One-liner    │  │ browse()         │  │ store_knowledge()     │  │
-│  │ agent        │  │ extract()        │  │                       │  │
-│  │ factory      │  │ crawl()          │  │ Workers AI embeddings │  │
-│  │              │  │ scrape()         │  │ + Vectorize storage   │  │
-│  └──────┬───────┘  │ discover_links() │  └───────────┬───────────┘  │
-│         │          │ screenshot()     │              │              │
-│         │          └────────┬─────────┘              │              │
-│         │                   │                        │              │
-│  ┌──────┴───────────────────┴────────────────────────┴───────────┐  │
-│  │                                                               │  │
-│  │  CloudflareProvider  ────────→  Workers AI  ──→  AI Gateway   │  │
-│  │  (auto AI Gateway routing, response normalization,            │  │
-│  │   model profiles for all Workers AI model families)           │  │
-│  │                                                               │  │
-│  └───────────────────────────────────────────────────────────────┘  │
-│                                                                      │
-│  ┌───────────────────┐  ┌───────────────────┐  ┌─────────────────┐  │
-│  │ D1MessageHistory  │  │ GatewayObserv.    │  │ Schema Utils    │  │
-│  │                   │  │                   │  │                 │  │
-│  │ Conversation      │  │ get_logs()        │  │ simplify_schema │  │
-│  │ persistence       │  │ get_analytics()   │  │ schema_stats()  │  │
-│  │ across sessions   │  │ add_feedback()    │  │ extract_json()  │  │
-│  └───────────────────┘  └───────────────────┘  └─────────────────┘  │
-│                                                                      │
-└──────────────────────────────────────────────────────────────────────┘
+---
+
+## Architecture
+
+```mermaid
+flowchart LR
+  app["Your Python app<br/><sub>PydanticAI agents · scripts · notebooks</sub>"]
+  app --> lib(["pydantic-ai-cloudflare"])
+
+  lib --> agents["**Agents & Structured Output**<br/>cloudflare_agent · cf_structured<br/>list_models · recommend_model"]
+  lib --> web["**Web Research**<br/>BrowserRunToolset<br/>browse · extract · crawl · scrape"]
+  lib --> rag["**RAG**<br/>KnowledgeBase (managed)<br/>DIYKnowledgeBase · VectorizeToolset"]
+  lib --> graph["**EntityGraph**<br/>build · features · find_similar<br/>recommend · freeze · render_html"]
+  lib --> ops["**Persistence & Ops**<br/>D1MessageHistory<br/>GatewayObservability"]
+
+  agents --> wai[Workers AI]
+  web --> br[Browser Run]
+  rag --> vec[Vectorize]
+  rag --> ais[AI Search]
+  rag --> wai
+  graph -.optional.-> wai
+  ops --> d1[D1]
+  ops --> gw[AI Gateway]
+
+  classDef cloudflare fill:#f6821f,stroke:#c8651b,color:#fff
+  class wai,br,vec,ais,d1,gw cloudflare
+  classDef pillar fill:#1e293b,stroke:#3b82f6,color:#e2e8f0
+  class agents,web,rag,graph,ops pillar
 ```
 
-### Components
+The orange nodes are Cloudflare services. The blue boxes are this library's primitives that wrap them with type safety, response normalization, and convenience APIs.
 
-| Component | What it does | Cloudflare Service |
-|-----------|-------------|-------------------|
-| `cloudflare_agent()` | One-liner agent factory with sensible defaults | All |
-| `cloudflare_model()` | LLM inference with auto response normalization | [Workers AI](https://developers.cloudflare.com/workers-ai/) |
-| `BrowserRunToolset` | 6 web interaction tools for agents | [Browser Run](https://developers.cloudflare.com/browser-run/) |
-| `VectorizeToolset` | RAG search + store (DIY) | [Vectorize](https://developers.cloudflare.com/vectorize/) |
-| `AISearchToolset` | Managed RAG search + chat | [AI Search](https://developers.cloudflare.com/ai-search/) |
-| `CloudflareEmbeddingModel` | Text embeddings | [Workers AI](https://developers.cloudflare.com/workers-ai/models/#text-embeddings) |
-| `D1MessageHistory` | Conversation persistence | [D1](https://developers.cloudflare.com/d1/) |
-| `GatewayObservability` | Logs, cost, analytics, feedback | [AI Gateway](https://developers.cloudflare.com/ai-gateway/) |
-| `list_models()` / `recommend_model()` | Model discovery + recommendations | — |
-| `cf_structured()` | Complex structured output that works on ALL models | [Workers AI](https://developers.cloudflare.com/workers-ai/) |
-| `simplify_schema()` / `schema_stats()` | Schema optimization for reliability | — |
+---
 
-### What we handle that's hard
+## Choose your starting point
 
-Workers AI has quirks that break naive integrations. This library handles them:
+```mermaid
+flowchart TD
+  start(["I want to..."])
+  start --> q1{Type of task?}
 
-- **Dict content responses** — Workers AI returns `content` as a parsed dict instead of a JSON string. We normalize it.
-- **Markdown code fences** — Models wrap JSON in ` ```json ... ``` `. We strip them.
-- **Prose-wrapped JSON** — Models add "Here's the JSON:" before the actual JSON. We extract it.
-- **Model-specific structured output** — Each model family needs a different strategy (tool calling vs json_object vs guided_json). Our profiles handle this automatically.
-- **Schema simplification** — Large schemas (9K+ chars) overwhelm models. `simplify_schema()` strips descriptions and defaults (65% reduction) while keeping the structure valid.
+  q1 -->|"Ask an LLM<br/>a question"| a1["**cloudflare_agent()**<br/><sub>One-liner agent factory</sub>"]
+  q1 -->|"Get validated<br/>structured output"| a2["**cf_structured()**<br/><sub>Pydantic models on every<br/>Workers AI model</sub>"]
+  q1 -->|"Browse the web,<br/>extract data"| a3["**BrowserRunToolset**<br/><sub>Headless Chrome on edge</sub>"]
+  q1 -->|"Search documents<br/>(RAG)"| q2{Managed or DIY?}
+  q1 -->|"Build ML features<br/>from a CSV"| a6["**EntityGraph.quick_build()**<br/><sub>4 lines, peer-adoption features</sub>"]
+  q1 -->|"Persist a chat<br/>across sessions"| a7["**D1MessageHistory**"]
+  q1 -->|"Track LLM costs<br/>and traces"| a8["**GatewayObservability**"]
+
+  q2 -->|"Hands-off"| a4["**KnowledgeBase**<br/><sub>AI Search · hybrid search<br/>+ reranking + citations</sub>"]
+  q2 -->|"Full control"| a5["**DIYKnowledgeBase**<br/><sub>Vectorize + chunking<br/>+ bge-reranker-base</sub>"]
+
+  classDef start fill:#3b82f6,stroke:#1d4ed8,color:#fff
+  class start start
+  classDef question fill:#1e293b,stroke:#475569,color:#e2e8f0
+  class q1,q2 question
+  classDef answer fill:#0f172a,stroke:#3b82f6,color:#cbd5e1
+  class a1,a2,a3,a4,a5,a6,a7,a8 answer
+```
+
+---
+
+## Five-minute tour
+
+```python
+from pydantic_ai_cloudflare import (
+    cloudflare_agent, cf_structured_sync,
+    BrowserRunToolset, KnowledgeBase, EntityGraph,
+    GatewayObservability,
+)
+from pydantic import BaseModel
+```
+
+#### 1. Agent with structured output
+
+```python
+class Company(BaseModel):
+    name: str
+    industry: str
+    headcount: int
+
+result = cf_structured_sync(
+    "NovaPay is a 200-person fintech in NYC",
+    Company,
+    model="@cf/qwen/qwen3-30b-a3b-fp8",
+)
+print(result.name, result.industry, result.headcount)
+# NovaPay fintech 200
+```
+
+`cf_structured()` works on **all** Workers AI models — Llama, Qwen, Kimi, Gemma, GLM, DeepSeek — handling each family's quirks (dict content, markdown fences, prose-wrapped JSON, model-specific output strategies) automatically.
+
+#### 2. Web browsing
+
+```python
+tools = BrowserRunToolset()
+plans = await tools._extract(
+    "https://cloudflare.com/plans",
+    "Extract pricing tiers, features, and prices",
+)
+```
+
+Six tools — `browse`, `extract`, `crawl`, `scrape`, `discover_links`, `screenshot` — exposed as a single PydanticAI toolset.
+
+#### 3. RAG in three lines
+
+```python
+kb = KnowledgeBase("my-docs")              # an AI Search instance name
+answer = await kb.ask("How does caching work?")
+print(answer.text, answer.citations)
+```
+
+Or DIY with full control: `DIYKnowledgeBase("my-vectors").ingest(["docs.example.com/**"])`.
+
+#### 4. Entity graph from a CSV → ML features
+
+```python
+import pandas as pd
+df = pd.read_csv("customers.csv")
+
+kg = EntityGraph()
+await kg.quick_build(df.to_dict("records"), id_column="customer_id")
+
+features = kg.to_feature_dicts()    # 22+ features per entity
+peers = await kg.find_similar("AcmeCorp", top_k=5)
+recs = kg.recommend("AcmeCorp", ["products"], k=5, min_rate=0.5)
+
+kg.render_html("graph.html", color_by="community")  # interactive, see below
+```
+
+#### 5. Zero-config observability
+
+```python
+obs = GatewayObservability()
+logs = await obs.get_logs(limit=10)
+analytics = await obs.get_analytics()
+await obs.add_feedback(logs[0]["id"], score=95)
+```
+
+Every LLM call routed through `cloudflare_agent()` is logged automatically by AI Gateway. Cost, latency, and prompts queryable.
+
+---
+
+## Capabilities at a glance
+
+| Capability | Module | Cloudflare service | Free tier |
+|---|---|---|:---:|
+| **AI agent factory** | `cloudflare_agent()` | Workers AI | ✅ |
+| **Reliable structured output** | `cf_structured()` | Workers AI | ✅ |
+| **Web browsing & scraping** | `BrowserRunToolset` | Browser Run | ✅ |
+| **Managed RAG** | `KnowledgeBase` | AI Search | ✅ |
+| **DIY RAG** | `DIYKnowledgeBase`, `VectorizeToolset` | Vectorize | ✅ |
+| **Embeddings** | `CloudflareEmbeddingModel` | Workers AI | ✅ |
+| **Entity graphs from tabular data** | `EntityGraph` | local Python | ✅ |
+| **Interactive graph visualization** | `kg.render_html()` | none (browser) | ✅ |
+| **Conversation persistence** | `D1MessageHistory` | D1 | ✅ |
+| **Observability + cost tracking** | `GatewayObservability` | AI Gateway | ✅ |
+| **Model discovery** | `list_models`, `recommend_model` | — | — |
+| **Schema optimization** | `simplify_schema`, `schema_stats` | — | — |
+
+### Quirks Workers AI throws at you that we handle
+
+| Quirk | What we do |
+|---|---|
+| `content` returned as a parsed dict instead of JSON string | Normalize to string |
+| Models wrap JSON in ` ```json ... ``` ` | Strip fences |
+| Models prepend "Here's the JSON:" prose | Extract embedded JSON |
+| Each model family wants a different output strategy (tool calling vs `json_object` vs `guided_json`) | Built-in profiles per family |
+| Schemas over 9K chars overwhelm small models | `simplify_schema()` (65% reduction, structure intact) |
+
+You don't have to think about any of this. Use `cf_structured(prompt, MyModel)` and the right thing happens.
 
 ---
 
@@ -223,39 +275,38 @@ agent = cloudflare_agent(model="@cf/qwen/qwen3-30b-a3b")
 
 ## Code Mode with Monty
 
-[Monty](https://github.com/pydantic/monty) is PydanticAI's sandboxed Python interpreter. Instead of the LLM making 10 sequential tool calls (10 round-trips), it writes **one Python script** that calls your tools in parallel. Monty executes it safely in <1μs.
+[Monty](https://github.com/pydantic/monty) is PydanticAI's sandboxed Python interpreter. Instead of 10 sequential tool calls (10 LLM round-trips), the model writes **one Python script** that calls your tools in parallel. Monty executes it safely in <1μs.
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                    WITHOUT Code Mode                              │
-│                                                                   │
-│  LLM call 1 → browse(cloudflare.com/plans)     → wait for result │
-│  LLM call 2 → browse(aws.amazon.com/pricing)   → wait for result │
-│  LLM call 3 → extract(cloudflare.com/plans)    → wait for result │
-│  LLM call 4 → extract(aws.amazon.com/pricing)  → wait for result │
-│  LLM call 5 → compare results                  → wait for result │
-│  LLM call 6 → generate report                  → final answer    │
-│                                                                   │
-│  Total: 6 LLM round-trips, ~30 seconds                           │
-└──────────────────────────────────────────────────────────────────┘
+```mermaid
+sequenceDiagram
+  autonumber
+  participant U as User
+  participant LLM as Workers AI
+  participant M as Monty (sandbox)
+  participant Tools as Browser Run / Vectorize
 
-┌──────────────────────────────────────────────────────────────────┐
-│                    WITH Code Mode (Monty)                         │
-│                                                                   │
-│  LLM call 1 → writes Python:                                     │
-│    ┌──────────────────────────────────────────────────┐           │
-│    │ cf, aws = await asyncio.gather(                  │           │
-│    │     browse("cloudflare.com/plans"),              │           │
-│    │     browse("aws.amazon.com/pricing"),            │           │
-│    │ )                                                │           │
-│    │ cf_data = await extract(cf, "pricing plans")     │           │
-│    │ aws_data = await extract(aws, "pricing plans")   │           │
-│    │ return compare(cf_data, aws_data)                │           │
-│    └──────────────────────────────────────────────────┘           │
-│  Monty executes it (<1μs) → tools run in parallel → done         │
-│                                                                   │
-│  Total: 1-2 LLM round-trips, ~10 seconds                         │
-└──────────────────────────────────────────────────────────────────┘
+  Note over U,Tools: Without Code Mode — 6 round-trips, ~30s
+  U->>LLM: prompt
+  LLM->>Tools: browse(cloudflare.com)
+  Tools-->>LLM: html
+  LLM->>Tools: browse(aws.com)
+  Tools-->>LLM: html
+  LLM->>Tools: extract(cf)
+  Tools-->>LLM: json
+  LLM->>Tools: extract(aws)
+  Tools-->>LLM: json
+  LLM->>U: comparison
+
+  Note over U,Tools: With Code Mode (Monty) — 1-2 round-trips, ~10s
+  U->>LLM: prompt
+  LLM->>M: writes Python script (asyncio.gather over tools)
+  par parallel tool execution
+    M->>Tools: browse(cloudflare.com)
+    M->>Tools: browse(aws.com)
+  end
+  Tools-->>M: results
+  M->>LLM: combined output
+  LLM->>U: comparison
 ```
 
 ```bash
@@ -266,11 +317,7 @@ pip install 'pydantic-ai-harness[code-mode]'
 from pydantic_ai_harness import CodeMode
 from pydantic_ai_cloudflare import cloudflare_agent
 
-agent = cloudflare_agent(
-    web=True,
-    capabilities=[CodeMode()],
-)
-
+agent = cloudflare_agent(web=True, capabilities=[CodeMode()])
 result = agent.run_sync(
     "Compare pricing on cloudflare.com/plans and aws.amazon.com/lambda/pricing"
 )
@@ -525,9 +572,31 @@ How it works:
 
 ---
 
-## EntityGraph — Peer-Adoption Features from Tabular Data
+## EntityGraph — peer-adoption features from tabular data
 
-Build typed entity graphs from tabular datasets. Each row becomes an entity, column values become nodes, edges represent real relationships. Then extract graph-derived features for ML.
+The flagship piece: turn a CSV (customer table, deal log, account list…) into
+a typed entity graph where each row is an entity, column values become feature
+nodes, and you can declare entity-to-entity relationships (`COMPETES_WITH`,
+`PARTNERS_WITH`, etc.). Then extract **graph-derived features** that flat
+tables can't express:
+
+```mermaid
+flowchart LR
+  csv["customers.csv"] --> profile["profile_data()<br/><sub>auto column-type inference</sub>"]
+  profile --> build["EntityGraph.quick_build()"]
+  build --> graph[(typed entity graph<br/>+ communities<br/>+ embeddings)]
+  graph --> ml["**ML features**<br/>degree, pagerank, community,<br/>knn_rate_*, n2v_*, lift, …"]
+  graph --> qa["**Chat / explain**<br/>find_similar, recommend,<br/>explain, ask, neighborhood"]
+  graph --> viz["**render_html()**<br/>interactive viz with<br/>filters, isolation, search"]
+  graph --> freeze["**freeze() → score_one()**<br/>production scoring, no drift"]
+```
+
+**Why a graph instead of a flat feature table?** A graph captures peer signals
+("4 of your 5 nearest peers have CASB; you don't") and multi-hop context
+("this account's competitor's customers all bought Zero Trust") that pivot
+tables and joins can't express compactly. The library produces both: graph
+metrics as ML features for XGBoost/LightGBM, and a queryable graph for
+LLM-driven exploration.
 
 ### Quick start (CSV → ML features in 4 lines)
 
@@ -852,38 +921,84 @@ features = EntityGraph.load_features("features.json")
 
 ### Visualization (zero-dependency)
 
-Render any EntityGraph to interactive HTML, Cytoscape.js JSON, D3 force-graph
-JSON, Mermaid (for docs), or GraphML (for Gephi/yEd). Color-coded by community
-or node type; edges colored by relationship type.
+Render any EntityGraph to interactive HTML, Cytoscape.js JSON, D3 force-graph,
+Mermaid, or GraphML. Color-coded by community, node type, or any column;
+edges color-coded by relationship type.
 
 ```python
-# Interactive HTML — open in any browser, draggable + zoomable
+# Interactive HTML — opens in any browser, fully self-contained
 kg.render_html("graph.html", color_by="community", max_nodes=300)
-# Self-contained — Cytoscape.js loaded from CDN, no Python deps to install.
 
-# Subgraph around one entity (its 2-hop neighborhood)
-kg.render_html("acme_neighborhood.html", focus="AcmeCorp", hops=2)
+# Subgraph around one entity (2-hop neighborhood)
+kg.render_html("acme.html", focus="AcmeCorp", hops=2)
 
-# Cytoscape.js JSON for embedding in your own web UI
+# Cytoscape.js JSON for embedding in your own UI
 spec = kg.to_cytoscape(color_by="community")
-# {"nodes": [...], "edges": [...], "metadata": {legend: [...], ...}}
 
-# Mermaid for Markdown / GitLab / Confluence (great for docs)
+# Mermaid for Markdown / GitLab / Confluence
 print(kg.to_mermaid(max_nodes=30))
 
 # GraphML for Gephi or yEd
 kg.to_graphml("graph.graphml")
 ```
 
-Color modes:
-- `color_by="community"` — distinct color per Louvain community (default if
-  computed)
-- `color_by="type"` — entity=blue, concept=green, list=orange, range=gray
-- `color_by="industry"` (or any column) — color entities by their value of
-  that column
+#### What you get in `render_html()` (rebuilt in v0.2.2)
 
-Layout options for HTML: `"cose"` (force, default), `"concentric"`,
-`"breadthfirst"`, `"grid"`, `"circle"`. Switch on the fly via the side panel.
+```mermaid
+flowchart TB
+  subgraph Sidebar["Sidebar (collapsible sections)"]
+    direction TB
+    s1[Search · live counts]
+    s2[Edge type filters<br/><sub>checkbox per HAS_PRODUCT,<br/>COMPETES_WITH, USES_TECH…</sub>]
+    s3[Node type filters<br/><sub>entity · concept · list · range</sub>]
+    s4[Community filters]
+    s5[Display toggles<br/><sub>edge labels · hover highlight<br/>bold edges · arrows</sub>]
+    s6[Layout switcher · Selection panel · Legend]
+  end
+
+  subgraph Canvas["Canvas (Cytoscape.js)"]
+    direction TB
+    c1[Pan · zoom · drag nodes]
+    c2[Click node → Isolate to neighborhood]
+    c3[Hover → others fade, neighbors stay bright]
+    c4[Search → matches glow gold, rest fades]
+  end
+
+  subgraph Shortcuts["Keyboard"]
+    direction LR
+    k1["/ search"]
+    k2["Esc reset"]
+    k3["e edge labels"]
+    k4["f fit view"]
+  end
+
+  Sidebar --- Canvas --- Shortcuts
+```
+
+| Feature | Why it matters |
+|---|---|
+| **Edge type filter checkboxes** | Click "USES_TECH" off and that whole edge type disappears — see only the relationships you care about |
+| **Node type filters** | Hide all `range` or `concept` nodes to focus on just entities |
+| **Click → Isolate** | Click any node → button hides everything except that node and its neighbors |
+| **Hover highlight** | Hovering a node fades unrelated stuff to 8% — instant visual focus |
+| **Edge label toggle** (`e` key) | Show every edge's type label at once when you need to read structure |
+| **Bolder edges by default** | width 2.2-5px, opacity 0.78 — readable without clicking |
+| **Live counts** | "X of Y visible" updates as filters change |
+| **Search match glow** | Matching nodes get a gold border, neighbors stay bright, rest fades |
+| **Selection panel** | Connections grouped by edge type ("HAS_PRODUCT (3) · COMPETES_WITH (1)") |
+| **Status bar + toolbar** | Transient feedback ("Isolated AcmeCorp") + Fit / Reset buttons |
+
+Color modes:
+- `color_by="community"` — Louvain community (default if computed)
+- `color_by="type"` — entity / concept / list / range
+- `color_by="industry"` (or any column) — color entities by that field
+
+Layout options: `cose` (force, default), `concentric`, `breadthfirst`,
+`grid`, `circle` — switch on the fly via the side panel or `Layout` section.
+
+For control over visualization payload size:
+- `include_raw_data=False` drops the source-record dump from each node
+- `raw_data_max_chars=200` (default) truncates long strings (`ae_notes` etc.)
 
 ### Troubleshooting
 
@@ -1037,10 +1152,12 @@ afterwards to see how many failed, and consider switching the
 
 ## Roadmap
 
-- [x] **v0.1.0** — Provider, Browser Run, Embeddings, Vectorize, D1, Gateway, Model Catalog, Schema Utils
-- [x] **v0.2.0** — Production correctness for EntityGraph (IDF, sentinel filter, point-in-time, freeze/score, parallel LLM), built-in visualization (HTML, Cytoscape, Mermaid, GraphML), build-time profiling, feature_report()
-- [ ] **v0.3.0** — Upstream CloudflareProvider to `pydantic/pydantic-ai`, VCR cassette integration tests
-- [ ] **v1.0.0** — Stable API, full docs site, PyPI release
+- [x] **v0.1.x** — Provider, Browser Run, Embeddings, Vectorize, D1, AI Gateway, model catalog, schema utils
+- [x] **v0.2.0** — Production correctness for EntityGraph (IDF weighting, sentinel-zero filter, point-in-time features, freeze/score, parallel LLM extraction); built-in visualization (HTML, Cytoscape, Mermaid, GraphML); build-time profiling; `feature_report()`
+- [x] **v0.2.1** — Onboarding UX: `quick_build()`, `GraphConfig`, automatic warning logging, usable `__repr__` / `__len__` / `__contains__`, troubleshooting docs
+- [x] **v0.2.2** — Field-test fixes: `score_one()` feature parity with `to_ml_dataset()`, lazy credential resolution (CSV-only flows work without env vars), warn-once gensim, `feature_report()` includes `knn_rate_*`, degenerate community warning, **HTML viz UX overhaul** (filter checkboxes, click-to-isolate, hover highlighting, keyboard shortcuts), `to_cytoscape(focus=...)` fallback, raw_data truncation, `generate_feature_from_text(verbose=True)`
+- [ ] **v0.3.0** — Upstream `CloudflareProvider` to `pydantic/pydantic-ai`, VCR cassette integration tests, vectorized `score_batch()`
+- [ ] **v1.0.0** — Stable API, full docs site, more notebooks
 
 ## Contributing
 
