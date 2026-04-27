@@ -42,7 +42,7 @@ flowchart LR
   lib --> agents["**Agents & Structured Output**<br/>cloudflare_agent · cf_structured<br/>list_models · recommend_model"]
   lib --> web["**Web Research**<br/>BrowserRunToolset<br/>browse · extract · crawl · scrape"]
   lib --> rag["**RAG**<br/>KnowledgeBase (managed)<br/>DIYKnowledgeBase · VectorizeToolset"]
-  lib --> graph["**EntityGraph**<br/>build · features · find_similar<br/>recommend · freeze · render_html"]
+  lib --> kg["**EntityGraph**<br/>build · features · find_similar<br/>recommend · freeze · render_html"]
   lib --> ops["**Persistence & Ops**<br/>D1MessageHistory<br/>GatewayObservability"]
 
   agents --> wai[Workers AI]
@@ -50,14 +50,14 @@ flowchart LR
   rag --> vec[Vectorize]
   rag --> ais[AI Search]
   rag --> wai
-  graph -.optional.-> wai
+  kg -.optional.-> wai
   ops --> d1[D1]
   ops --> gw[AI Gateway]
 
   classDef cloudflare fill:#f6821f,stroke:#c8651b,color:#fff
   class wai,br,vec,ais,d1,gw cloudflare
   classDef pillar fill:#1e293b,stroke:#3b82f6,color:#e2e8f0
-  class agents,web,rag,graph,ops pillar
+  class agents,web,rag,kg,ops pillar
 ```
 
 The orange nodes are Cloudflare services. The blue boxes are this library's primitives that wrap them with type safety, response normalization, and convenience APIs.
@@ -584,11 +584,11 @@ tables can't express:
 flowchart LR
   csv["customers.csv"] --> profile["profile_data()<br/><sub>auto column-type inference</sub>"]
   profile --> build["EntityGraph.quick_build()"]
-  build --> graph[(typed entity graph<br/>+ communities<br/>+ embeddings)]
-  graph --> ml["**ML features**<br/>degree, pagerank, community,<br/>knn_rate_*, n2v_*, lift, …"]
-  graph --> qa["**Chat / explain**<br/>find_similar, recommend,<br/>explain, ask, neighborhood"]
-  graph --> viz["**render_html()**<br/>interactive viz with<br/>filters, isolation, search"]
-  graph --> freeze["**freeze() → score_one()**<br/>production scoring, no drift"]
+  build --> kg[(typed entity graph<br/>+ communities<br/>+ embeddings)]
+  kg --> ml["**ML features**<br/>degree, pagerank, community,<br/>knn_rate_*, n2v_*, lift, …"]
+  kg --> qa["**Chat / explain**<br/>find_similar, recommend,<br/>explain, ask, neighborhood"]
+  kg --> viz["**render_html()**<br/>interactive viz with<br/>filters, isolation, search"]
+  kg --> freeze["**freeze() → score_one()**<br/>production scoring, no drift"]
 ```
 
 **Why a graph instead of a flat feature table?** A graph captures peer signals
