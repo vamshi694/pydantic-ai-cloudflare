@@ -2,8 +2,12 @@
 __pycache__/
 *.egg-info/
 dist/
+build/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 *.pyc
 .env
+uv.lock
+.ipynb_checkpoints/
+*.DS_Store
