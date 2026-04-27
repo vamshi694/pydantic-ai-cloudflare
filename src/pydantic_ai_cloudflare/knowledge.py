@@ -399,23 +399,71 @@ class DIYKnowledgeBase:
     ) -> dict[str, Any]:
         """Ingest content into the knowledge base.
 
-        Accepts URLs (fetched via Browser Run) or raw text strings.
+        Accepts:
+        - URLs (fetched via Browser Run, handles JS-rendered pages)
+        - Local file paths (reads .txt, .md, .csv, .json, .py, etc.)
+        - Directory paths (reads all supported files recursively)
+        - Raw text strings
+
         Content is chunked, embedded, and stored in Vectorize.
 
         Args:
-            sources: List of URLs or text strings.
+            sources: List of URLs, file paths, directory paths, or text.
             metadata: Extra metadata to attach to all chunks.
 
         Returns:
-            Dict with stats: chunks_created, vectors_stored.
+            Dict with stats: chunks_created, vectors_stored, sources_processed.
         """
+        import glob
+        import os
+
         from .browser_run import BrowserRunToolset
 
+        # File extensions we can read as text
+        _TEXT_EXTENSIONS = {
+            ".txt",
+            ".md",
+            ".markdown",
+            ".rst",
+            ".csv",
+            ".tsv",
+            ".json",
+            ".jsonl",
+            ".yaml",
+            ".yml",
+            ".toml",
+            ".py",
+            ".js",
+            ".ts",
+            ".go",
+            ".rs",
+            ".java",
+            ".rb",
+            ".php",
+            ".html",
+            ".htm",
+            ".xml",
+            ".css",
+            ".sql",
+            ".sh",
+            ".bash",
+            ".zsh",
+            ".fish",
+            ".env",
+            ".cfg",
+            ".ini",
+            ".conf",
+            ".log",
+            ".tex",
+        }
+
         all_chunks: list[dict[str, Any]] = []
+        sources_processed = 0
 
         for source in sources:
+            # Detect source type
             if source.startswith("http://") or source.startswith("https://"):
-                # Fetch via Browser Run
+                # URL → fetch via Browser Run
                 ts = BrowserRunToolset(
                     account_id=self._account_id,
                     api_key=self._api_key,
@@ -423,9 +471,83 @@ class DIYKnowledgeBase:
                 )
                 content = await ts._browse(source)
                 source_label = source
+                sources_processed += 1
+
+            elif os.path.isdir(source):
+                # Directory → read all text files recursively
+                for root, _dirs, files in os.walk(source):
+                    for fname in sorted(files):
+                        ext = os.path.splitext(fname)[1].lower()
+                        if ext not in _TEXT_EXTENSIONS:
+                            continue
+                        fpath = os.path.join(root, fname)
+                        try:
+                            with open(fpath, encoding="utf-8", errors="ignore") as f:
+                                file_content = f.read()
+                        except (OSError, PermissionError):
+                            logger.warning(f"Skipping unreadable file: {fpath}")
+                            continue
+                        if not file_content.strip():
+                            continue
+                        file_chunks = chunk_text(
+                            file_content, self._chunk_size, self._chunk_overlap
+                        )
+                        for i, chunk in enumerate(file_chunks):
+                            chunk_meta = {
+                                "text": chunk[:1000],
+                                "source": fpath,
+                                "filename": fname,
+                                "chunk_index": str(i),
+                            }
+                            if metadata:
+                                chunk_meta.update(metadata)
+                            all_chunks.append({"text": chunk, "metadata": chunk_meta})
+                        sources_processed += 1
+                continue  # already chunked, skip the common chunking below
+
+            elif os.path.isfile(source):
+                # Single file → read it
+                try:
+                    with open(source, encoding="utf-8", errors="ignore") as f:
+                        content = f.read()
+                except (OSError, PermissionError):
+                    logger.warning(f"Skipping unreadable file: {source}")
+                    continue
+                source_label = source
+                sources_processed += 1
+
+            elif "*" in source or "?" in source:
+                # Glob pattern → expand and read matching files
+                matched = glob.glob(source, recursive=True)
+                for fpath in sorted(matched):
+                    if not os.path.isfile(fpath):
+                        continue
+                    try:
+                        with open(fpath, encoding="utf-8", errors="ignore") as f:
+                            file_content = f.read()
+                    except (OSError, PermissionError):
+                        continue
+                    if not file_content.strip():
+                        continue
+                    file_chunks = chunk_text(file_content, self._chunk_size, self._chunk_overlap)
+                    for i, chunk in enumerate(file_chunks):
+                        chunk_meta = {
+                            "text": chunk[:1000],
+                            "source": fpath,
+                            "filename": os.path.basename(fpath),
+                            "chunk_index": str(i),
+                        }
+                        if metadata:
+                            chunk_meta.update(metadata)
+                        all_chunks.append({"text": chunk, "metadata": chunk_meta})
+                    sources_processed += 1
+                continue
+
             else:
+                # Raw text string
                 content = source
                 source_label = f"text:{hashlib.md5(source[:100].encode()).hexdigest()[:8]}"
+                sources_processed += 1
 
             chunks = chunk_text(content, self._chunk_size, self._chunk_overlap)
             for i, chunk in enumerate(chunks):
@@ -439,7 +561,11 @@ class DIYKnowledgeBase:
                 all_chunks.append({"text": chunk, "metadata": chunk_meta})
 
         if not all_chunks:
-            return {"chunks_created": 0, "vectors_stored": 0}
+            return {
+                "chunks_created": 0,
+                "vectors_stored": 0,
+                "sources_processed": sources_processed,
+            }
 
         # Embed all chunks
         texts = [c["text"] for c in all_chunks]
@@ -474,7 +600,11 @@ class DIYKnowledgeBase:
             check_api_response(data)
             stored += len(batch)
 
-        return {"chunks_created": len(all_chunks), "vectors_stored": stored}
+        return {
+            "chunks_created": len(all_chunks),
+            "vectors_stored": stored,
+            "sources_processed": sources_processed,
+        }
 
     async def search(
         self,

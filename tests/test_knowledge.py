@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -162,3 +163,101 @@ class TestDIYKnowledgeBase:
                 stats = await kb.ingest(["This is a short test document."])
 
             assert stats["chunks_created"] >= 1
+
+
+class TestLocalFileIngestion:
+    """Test ingesting local files and directories."""
+
+    @pytest.mark.asyncio
+    async def test_ingest_single_file(self, tmp_path: Any) -> None:
+        with patch.dict(os.environ, {"CLOUDFLARE_ACCOUNT_ID": "a", "CLOUDFLARE_API_TOKEN": "t"}):
+            # Create a temp file
+            f = tmp_path / "test.txt"
+            f.write_text("This is test content for ingestion into the knowledge base.")
+
+            kb = DIYKnowledgeBase("idx", chunk_size=100, chunk_overlap=20)
+
+            embed_resp = MagicMock()
+            embed_resp.raise_for_status = MagicMock()
+            embed_resp.json.return_value = {
+                "success": True,
+                "result": {"data": [[0.1, 0.2, 0.3]]},
+            }
+            upsert_resp = MagicMock()
+            upsert_resp.raise_for_status = MagicMock()
+            upsert_resp.json.return_value = {"success": True, "result": {}}
+
+            with patch("pydantic_ai_cloudflare.knowledge.httpx.AsyncClient") as mock_cls:
+                mock_client = AsyncMock()
+                mock_client.post = AsyncMock(side_effect=[embed_resp, upsert_resp])
+                mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+                mock_client.__aexit__ = AsyncMock(return_value=None)
+                mock_cls.return_value = mock_client
+
+                stats = await kb.ingest([str(f)])
+
+            assert stats["sources_processed"] == 1
+            assert stats["chunks_created"] >= 1
+
+    @pytest.mark.asyncio
+    async def test_ingest_directory(self, tmp_path: Any) -> None:
+        with patch.dict(os.environ, {"CLOUDFLARE_ACCOUNT_ID": "a", "CLOUDFLARE_API_TOKEN": "t"}):
+            # Create multiple files
+            (tmp_path / "doc1.txt").write_text("First document about Python.")
+            (tmp_path / "doc2.md").write_text("# Second doc\nAbout Cloudflare.")
+            (tmp_path / "image.png").write_bytes(b"\x89PNG")  # should be skipped
+
+            kb = DIYKnowledgeBase("idx", chunk_size=100, chunk_overlap=10)
+
+            embed_resp = MagicMock()
+            embed_resp.raise_for_status = MagicMock()
+            embed_resp.json.return_value = {
+                "success": True,
+                "result": {"data": [[0.1, 0.2], [0.3, 0.4]]},
+            }
+            upsert_resp = MagicMock()
+            upsert_resp.raise_for_status = MagicMock()
+            upsert_resp.json.return_value = {"success": True, "result": {}}
+
+            with patch("pydantic_ai_cloudflare.knowledge.httpx.AsyncClient") as mock_cls:
+                mock_client = AsyncMock()
+                mock_client.post = AsyncMock(side_effect=[embed_resp, upsert_resp])
+                mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+                mock_client.__aexit__ = AsyncMock(return_value=None)
+                mock_cls.return_value = mock_client
+
+                stats = await kb.ingest([str(tmp_path)])
+
+            assert stats["sources_processed"] == 2  # txt + md, not png
+            assert stats["chunks_created"] >= 2
+
+    @pytest.mark.asyncio
+    async def test_ingest_glob_pattern(self, tmp_path: Any) -> None:
+        with patch.dict(os.environ, {"CLOUDFLARE_ACCOUNT_ID": "a", "CLOUDFLARE_API_TOKEN": "t"}):
+            (tmp_path / "a.txt").write_text("File A content.")
+            (tmp_path / "b.txt").write_text("File B content.")
+            (tmp_path / "c.md").write_text("File C content.")
+
+            kb = DIYKnowledgeBase("idx", chunk_size=100, chunk_overlap=10)
+
+            embed_resp = MagicMock()
+            embed_resp.raise_for_status = MagicMock()
+            embed_resp.json.return_value = {
+                "success": True,
+                "result": {"data": [[0.1, 0.2], [0.3, 0.4]]},
+            }
+            upsert_resp = MagicMock()
+            upsert_resp.raise_for_status = MagicMock()
+            upsert_resp.json.return_value = {"success": True, "result": {}}
+
+            with patch("pydantic_ai_cloudflare.knowledge.httpx.AsyncClient") as mock_cls:
+                mock_client = AsyncMock()
+                mock_client.post = AsyncMock(side_effect=[embed_resp, upsert_resp])
+                mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+                mock_client.__aexit__ = AsyncMock(return_value=None)
+                mock_cls.return_value = mock_client
+
+                # Only .txt files
+                stats = await kb.ingest([str(tmp_path / "*.txt")])
+
+            assert stats["sources_processed"] == 2  # a.txt + b.txt, not c.md
