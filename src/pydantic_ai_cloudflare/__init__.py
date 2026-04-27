@@ -8,6 +8,7 @@ from .browser_run import BrowserRunToolset
 from .d1 import D1MessageHistory
 from .data_profiler import DataDictionary, profile_data, profile_data_with_llm
 from .embeddings import CloudflareEmbeddingModel
+from .feature_engine import compute_feature
 from .gateway import GatewayObservability
 from .graph import KnowledgeGraph
 from .knowledge import DIYKnowledgeBase, KnowledgeBase
@@ -41,6 +42,7 @@ __all__ = [
     "DIYKnowledgeBase",
     # Knowledge graph
     "KnowledgeGraph",
+    "compute_feature",
     "profile_data",
     "profile_data_with_llm",
     "DataDictionary",
