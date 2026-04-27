@@ -562,6 +562,17 @@ co = kg.co_occurrence_features("products_owned")
 answer = await kg.ask("Which accounts are most likely to expand?")
 ```
 
+**Benchmarks (10,000 accounts):**
+
+| Step | Time | Output |
+|---|---|---|
+| Build graph | 0.25s | 28,705 nodes, 153,642 edges |
+| Louvain communities | <1s | 29 communities |
+| Node2Vec embeddings | ~75s | 32-dim structural embeddings |
+| ML features | 3s | 14 features/entity |
+| KNN (k=5) | ~120s | Distance to 5 nearest neighbors |
+| Temporal decay | built-in | 18x recency boost (recent vs 2yr old) |
+
 **Graph features for ML:**
 
 | Feature Type | Features | Use Case |
