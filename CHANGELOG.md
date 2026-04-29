@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.5 (2026-04-29)
+
+### Docs
+- **README: rewritten structured output section** — explains why tool calling fails on Workers AI, how `cf_structured()` solves it, comparison table, all options (AI Gateway, caching, prompt caching, retries).
+- **Notebook 08: Structured Output Deep Dive** — simple → complex schema examples with real outputs, AI Gateway caching demo, prompt caching, schema complexity check. Shows the exact pattern that fails with LangChain `with_structured_output()` working with `cf_structured()`.
+
 ## 0.2.4 (2026-04-28)
 
 ### Added

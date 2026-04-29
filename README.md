@@ -533,42 +533,105 @@ stats = schema_stats(MyComplexModel)
 
 ## Complex Structured Output — `cf_structured()`
 
-PydanticAI's built-in structured output uses tool calling, which breaks on Workers AI for complex schemas (null arguments, malformed retries). `cf_structured()` bypasses this and calls Workers AI directly with the same approach as `langchain-cloudflare`:
+Both LangChain's `with_structured_output()` (tool calling) and PydanticAI's built-in structured output break on Workers AI for complex schemas — null arguments, malformed retries, truncated JSON. `cf_structured()` solves this by calling Workers AI directly with schema injection + `json_object` mode + custom retry logic.
+
+### Why it works when tool calling doesn't
+
+| Approach | How it sends the schema | Workers AI result |
+|---|---|---|
+| **Tool calling** (LangChain/PydanticAI default) | Schema as function definition in `tools` array | Fails: null arguments, truncated JSON, 400 on retries |
+| **`cf_structured()`** | Schema injected into system prompt + `response_format: json_object` | Works: every model, every schema size |
+
+### Basic usage
 
 ```python
 from pydantic_ai_cloudflare import cf_structured_sync
 
 result = cf_structured_sync(
-    "Research report on NovaPay, a payment processing startup",
+    "Research report on a fictional IoT analytics company",
     CompanyReport,  # 7 nested models, Literal types, lists
     model="@cf/qwen/qwen3-30b-a3b-fp8",
 )
 print(result.company.name)   # validated Pydantic object
-print(result.next_steps[0])  # NextStep(action=..., priority="HIGH")
 ```
 
-How it works:
-1. Generates + simplifies JSON schema from your Pydantic model
+### With AI Gateway (logging + caching)
+
+```python
+result = cf_structured_sync(
+    "Analyze this company",
+    MySchema,
+    gateway_id="default",          # route through AI Gateway
+    cache_ttl=300,                 # cache identical prompts for 5 min
+    session_id="sess-123",         # prompt caching (session affinity)
+    gateway_metadata={"team": "data-science"},
+)
+```
+
+### With prompt caching (reduce latency)
+
+```python
+# First call: full inference (~30s)
+r1 = cf_structured_sync(prompt, Schema, session_id="my-session")
+
+# Follow-up with same session: KV prefix cache hit (~5s)
+r2 = cf_structured_sync(followup, Schema, session_id="my-session")
+```
+
+### How it works
+
+1. Generates + simplifies JSON schema from your Pydantic model (65% smaller)
 2. Injects schema into system prompt with strict formatting instructions
 3. Sets `response_format: json_object` to force valid JSON
 4. Parses response (handles dict content, markdown fences, prose wrapping)
 5. Validates against Pydantic
-6. On failure: retries with error feedback (not via API messages that Workers AI rejects)
+6. On failure: retries with error feedback as user message (not the broken API retry format)
 
-**Tested on all 6 major Workers AI models** with a 7-nested-model schema:
+### Tested on all 6 major Workers AI models
 
-| Model | Complex Schema (7 nested) | Time |
+With a nested schema (3 list-of-models, Literal enums, Optional fields):
+
+| Model | Result | Time |
 |---|---|---|
-| Llama 3.3 70B | Pass | 31s |
+| Llama 3.3 70B | Pass | 52s |
 | Qwen 3 30B | Pass | 17s |
 | Kimi K2.6 | Pass | 55s |
 | Gemma 4 26B | Pass | 32s |
 | GLM 4.7 Flash | Pass | 24s |
 | DeepSeek R1 32B | Pass | 30s |
 
+### All `cf_structured()` options
+
+```python
+result = await cf_structured(
+    prompt, MySchema,
+    # Model
+    model="@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    max_tokens=8192,
+    temperature=0.1,
+    retries=3,
+    simplify=True,              # reduce schema tokens
+    # AI Gateway
+    gateway_id="default",       # route through gateway
+    cache_ttl=300,              # cache responses (seconds)
+    skip_cache=False,           # bypass cache this request
+    cache_key="my-key",         # custom cache key
+    session_id="sess-123",      # prompt caching
+    # Gateway request handling
+    gateway_timeout=30000,      # gateway timeout (ms)
+    gateway_max_attempts=3,     # gateway retries
+    gateway_retry_delay=1000,   # retry delay (ms)
+    gateway_backoff="exponential",
+    # Metadata
+    gateway_metadata={"user_id": "u-123"},
+)
+```
+
 **When to use what:**
 - Simple schemas (3-5 fields): `cloudflare_agent(output_type=MyModel)` works fine
 - Complex schemas (4+ nested models, Literal types): use `cf_structured()`
+- Production with caching: add `gateway_id` + `cache_ttl`
+- Multi-turn conversations: add `session_id` for prompt caching
 
 ---
 
@@ -1127,6 +1190,7 @@ afterwards to see how many failed, and consider switching the
 | [05_code_mode_monty](notebooks/05_code_mode_monty.ipynb) | Parallel tool execution with Monty | Walkthrough |
 | [06_complex_structured_output](notebooks/06_complex_structured_output.ipynb) | `cf_structured()` across all Workers AI models | Yes |
 | [07_knowledge_graph](notebooks/07_knowledge_graph.ipynb) | Build graph from 2000 rows, ML features, KNN rates, recommendations | Yes |
+| [08_structured_output_deep_dive](notebooks/08_structured_output_deep_dive.ipynb) | Why tool calling fails, cf_structured() solution, AI Gateway caching, prompt caching | Yes |
 
 ---
 
