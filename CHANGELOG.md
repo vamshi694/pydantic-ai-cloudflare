@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.4 (2026-04-28)
+
+### Added
+- **AI Gateway support on `cf_structured()`** — route structured output calls through AI Gateway for logging, analytics, and caching. Same as langchain-cloudflare's AI Gateway integration.
+- **Response caching** — `cache_ttl=300` caches identical prompts for 5 minutes via AI Gateway. `skip_cache=True` to bypass. `cache_key="my-key"` for custom cache keys.
+- **Prompt caching** — `session_id="sess-123"` routes to same model instance for KV prefix cache hits. Reduces latency on multi-turn conversations.
+- **Gateway request handling** — `gateway_timeout`, `gateway_max_attempts`, `gateway_retry_delay`, `gateway_backoff` for gateway-level retries and timeouts.
+- **Gateway metadata** — `gateway_metadata={"user_id": "u-123"}` attaches custom metadata to every gateway log entry.
+
 ## 0.2.3 (2026-04-27)
 
 A correctness patch for two issues that survived v0.2.2.

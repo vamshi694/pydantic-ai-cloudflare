@@ -1519,13 +1519,10 @@ class EntityGraph:
         # feature_report so users see *why* their graph is unhelpful.
         n_entities = len(self._entity_ids)
         if n_entities >= 5:
-            entity_communities = {
-                self._communities.get(nid, -1) for nid in self._entity_ids
-            }
+            entity_communities = {self._communities.get(nid, -1) for nid in self._entity_ids}
             n_unique = len(entity_communities)
-            no_communities_found = (
-                not self._communities
-                or (n_unique == 1 and -1 in entity_communities)
+            no_communities_found = not self._communities or (
+                n_unique == 1 and -1 in entity_communities
             )
             if no_communities_found:
                 self._warn(
@@ -3231,9 +3228,7 @@ class EntityGraph:
                         k=self._last_knn_k or 5,
                     )
                     sample_rates = next(iter(rates.values()), {})
-                    knn_rate_keys = [
-                        k for k in sample_rates if k.startswith("knn_rate_")
-                    ]
+                    knn_rate_keys = [k for k in sample_rates if k.startswith("knn_rate_")]
                 except Exception:
                     # Don't let a reporting helper break the report.
                     knn_rate_keys = []

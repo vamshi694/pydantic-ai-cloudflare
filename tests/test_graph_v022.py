@@ -122,9 +122,7 @@ class TestScoreOneFeatureParity:
                 compute_similarity=False,
             )
             kg.freeze(k=2)
-            scored = await kg.score_one(
-                {"id": "X", "competitor": "Zscaler"}
-            )
+            scored = await kg.score_one({"id": "X", "competitor": "Zscaler"})
             assert "COMPETES_WITH_degree" in scored
             assert scored["COMPETES_WITH_degree"] == 1
 
@@ -243,9 +241,7 @@ class TestGensimWarningOnce:
                 pass
 
             # Force the warning path
-            with caplog.at_level(
-                logging.WARNING, logger="pydantic_ai_cloudflare.graph"
-            ):
+            with caplog.at_level(logging.WARNING, logger="pydantic_ai_cloudflare.graph"):
                 # Three separate calls — should warn once total
                 graph_mod._node2vec_embeddings({"a": {"b"}, "b": {"a"}}, dimensions=4)
                 graph_mod._node2vec_embeddings({"a": {"b"}, "b": {"a"}}, dimensions=4)
@@ -280,9 +276,7 @@ class TestFeatureReportIncludesKnnRate:
                 "feature_report should list knn_rate_* features after freeze"
             )
             # All entries should be properly prefixed
-            assert all(
-                k.startswith("knn_rate_") for k in report["features"]["knn_rate"]
-            )
+            assert all(k.startswith("knn_rate_") for k in report["features"]["knn_rate"])
 
     @pytest.mark.asyncio
     async def test_after_to_ml_dataset_report_lists_knn_rate(self) -> None:
@@ -342,9 +336,7 @@ class TestDegenerateCommunityWarning:
     async def test_no_false_warning_on_healthy_communities(self) -> None:
         """If communities < entities by enough margin, no warning."""
         # Many shared values → real community structure
-        records = [
-            {"id": f"E{i}", "category": "A" if i < 5 else "B"} for i in range(10)
-        ]
+        records = [{"id": f"E{i}", "category": "A" if i < 5 else "B"} for i in range(10)]
 
         with patch.dict(os.environ, _env()):
             kg = EntityGraph()
@@ -357,9 +349,7 @@ class TestDegenerateCommunityWarning:
                 compute_similarity=False,
             )
             kg.compute_features()
-            assert not any(
-                "degenerate" in w.lower() for w in kg.build_warnings
-            )
+            assert not any("degenerate" in w.lower() for w in kg.build_warnings)
 
 
 # ============================================================
@@ -385,15 +375,11 @@ class TestFocusFallback:
                 extract_entities=False,
                 compute_similarity=False,
             )
-            with caplog.at_level(
-                logging.WARNING, logger="pydantic_ai_cloudflare.visualization"
-            ):
+            with caplog.at_level(logging.WARNING, logger="pydantic_ai_cloudflare.visualization"):
                 spec = kg.to_cytoscape(focus="DOES_NOT_EXIST", hops=2)
             # Was 0 in v0.2.1; now must return real graph
             assert spec["nodes"], "expected non-empty fallback subgraph"
-            assert any(
-                "did not resolve" in m for m in caplog.messages
-            ), caplog.messages
+            assert any("did not resolve" in m for m in caplog.messages), caplog.messages
 
     @pytest.mark.asyncio
     async def test_resolved_focus_still_works(self) -> None:
@@ -424,9 +410,7 @@ class TestRawDataHandling:
     async def test_raw_data_truncated_by_default(self) -> None:
         """Long string values should be truncated to 200 chars by default."""
         big_text = "x" * 1000
-        records = [
-            {"id": f"E{i}", "industry": "SaaS", "notes": big_text} for i in range(3)
-        ]
+        records = [{"id": f"E{i}", "industry": "SaaS", "notes": big_text} for i in range(3)]
         with patch.dict(os.environ, _env()):
             kg = EntityGraph()
             await kg.build_from_records(
@@ -716,16 +700,12 @@ class TestGenerateFeatureFromTextTransparency:
                 extract_entities=False,
                 compute_similarity=False,
             )
-            with caplog.at_level(
-                logging.WARNING, logger="pydantic_ai_cloudflare.feature_engine"
-            ):
+            with caplog.at_level(logging.WARNING, logger="pydantic_ai_cloudflare.feature_engine"):
                 result = await feature_engine.generate_feature_from_text(
                     kg, "useless feature", verbose=True
                 )
             # Warning should be issued
-            assert any(
-                "degenerate" in m.lower() for m in caplog.messages
-            ), caplog.messages
+            assert any("degenerate" in m.lower() for m in caplog.messages), caplog.messages
             # Verbose result should flag it
             assert result["degenerate"] is True
 
@@ -760,9 +740,7 @@ class TestGenerateFeatureFromTextTransparency:
                 extract_entities=False,
                 compute_similarity=False,
             )
-            result = await feature_engine.generate_feature_from_text(
-                kg, "test", verbose=False
-            )
+            result = await feature_engine.generate_feature_from_text(kg, "test", verbose=False)
             # Plain dict[str, float], not the verbose envelope
             assert all(isinstance(v, float) for v in result.values())
             assert "feature" not in result  # Only present in verbose mode

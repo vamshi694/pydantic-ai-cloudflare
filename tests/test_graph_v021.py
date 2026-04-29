@@ -411,9 +411,7 @@ class TestFreezeErrorMessages:
             import asyncio
 
             with pytest.raises(RuntimeError) as exc_info:
-                asyncio.get_event_loop().run_until_complete(
-                    kg.score_one({"id": "test"})
-                )
+                asyncio.get_event_loop().run_until_complete(kg.score_one({"id": "test"}))
             msg = str(exc_info.value)
             # Should reference build_from_records or quick_build
             assert "build_from_records" in msg or "quick_build" in msg

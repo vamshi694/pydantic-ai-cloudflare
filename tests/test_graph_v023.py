@@ -33,29 +33,71 @@ def _env() -> dict[str, str]:
 # union-vs-per-entity comparison bug.
 RECORDS = [
     # Entity 0: has products + lost_reason + competitor
-    {"id": "Acme", "industry": "SaaS", "geo": "NAMER",
-     "products": "CDN, WAF", "lost_reason": "price", "competitor": "Zscaler",
-     "arr": 1_000_000, "deals_lost": 2},
+    {
+        "id": "Acme",
+        "industry": "SaaS",
+        "geo": "NAMER",
+        "products": "CDN, WAF",
+        "lost_reason": "price",
+        "competitor": "Zscaler",
+        "arr": 1_000_000,
+        "deals_lost": 2,
+    },
     # Entity 1: no lost_reason (will lack HAS_LOST_REASON_degree)
-    {"id": "Nexa", "industry": "SaaS", "geo": "EMEA",
-     "products": "CDN", "lost_reason": "", "competitor": "Okta",
-     "arr": 500_000, "deals_lost": 0},
+    {
+        "id": "Nexa",
+        "industry": "SaaS",
+        "geo": "EMEA",
+        "products": "CDN",
+        "lost_reason": "",
+        "competitor": "Okta",
+        "arr": 500_000,
+        "deals_lost": 0,
+    },
     # Entity 2: no competitor (will lack COMPETES_WITH_degree)
-    {"id": "Globex", "industry": "Security", "geo": "APAC",
-     "products": "WAF, Zero Trust", "lost_reason": "fit", "competitor": "",
-     "arr": 750_000, "deals_lost": 1},
+    {
+        "id": "Globex",
+        "industry": "Security",
+        "geo": "APAC",
+        "products": "WAF, Zero Trust",
+        "lost_reason": "fit",
+        "competitor": "",
+        "arr": 750_000,
+        "deals_lost": 1,
+    },
     # Entity 3: nothing on lost_reason or competitor
-    {"id": "Initech", "industry": "Security", "geo": "NAMER",
-     "products": "Access", "lost_reason": "", "competitor": "",
-     "arr": 1_500_000, "deals_lost": 0},
+    {
+        "id": "Initech",
+        "industry": "Security",
+        "geo": "NAMER",
+        "products": "Access",
+        "lost_reason": "",
+        "competitor": "",
+        "arr": 1_500_000,
+        "deals_lost": 0,
+    },
     # Entity 4: complete record again — for variation
-    {"id": "Hooli", "industry": "SaaS", "geo": "NAMER",
-     "products": "CDN, WAF, Zero Trust", "lost_reason": "timing",
-     "competitor": "Cisco", "arr": 2_000_000, "deals_lost": 3},
+    {
+        "id": "Hooli",
+        "industry": "SaaS",
+        "geo": "NAMER",
+        "products": "CDN, WAF, Zero Trust",
+        "lost_reason": "timing",
+        "competitor": "Cisco",
+        "arr": 2_000_000,
+        "deals_lost": 3,
+    },
     # Entity 5: another minimal record
-    {"id": "Pied", "industry": "Tech", "geo": "EMEA",
-     "products": "CDN", "lost_reason": "", "competitor": "Fortinet",
-     "arr": 250_000, "deals_lost": 0},
+    {
+        "id": "Pied",
+        "industry": "Tech",
+        "geo": "EMEA",
+        "products": "CDN",
+        "lost_reason": "",
+        "competitor": "Fortinet",
+        "arr": 250_000,
+        "deals_lost": 0,
+    },
 ]
 
 
@@ -141,8 +183,7 @@ class TestScoreOneParityRound2:
                 compute_similarity=False,
             )
             kg.freeze(target_columns=["products"], k=3)
-            scored = await kg.score_one({"id": "X", "industry": "SaaS",
-                                          "products": "CDN"})
+            scored = await kg.score_one({"id": "X", "industry": "SaaS", "products": "CDN"})
             # Top-level list, not nested
             assert "knn_peers" in scored
             assert isinstance(scored["knn_peers"], list)
@@ -156,8 +197,7 @@ class TestScoreOneParityRound2:
                 RECORDS,
                 id_column="id",
                 categorical_columns=["industry", "geo"],
-                list_columns={"products": "HAS_PRODUCT",
-                              "lost_reason": "HAS_LOST_REASON"},
+                list_columns={"products": "HAS_PRODUCT", "lost_reason": "HAS_LOST_REASON"},
                 numeric_columns=["arr"],
                 relationship_columns={"competitor": "COMPETES_WITH"},
                 auto_detect_sentinels=False,
@@ -175,8 +215,7 @@ class TestScoreOneParityRound2:
 
             # Inference side: drop non-scalar diagnostics (the documented pattern)
             scored = await kg.score_one({**RECORDS[0], "id": "INFER"})
-            inference_features = {k: v for k, v in scored.items()
-                                  if isinstance(v, (int, float))}
+            inference_features = {k: v for k, v in scored.items() if isinstance(v, (int, float))}
 
             assert set(inference_features.keys()) == train_columns
 
@@ -197,8 +236,7 @@ class TestScoreOneParityRound2:
             kg.freeze(target_columns=["products"], k=2)
 
             new_records = [
-                {"id": f"new{i}", "industry": "SaaS", "products": "CDN"}
-                for i in range(3)
+                {"id": f"new{i}", "industry": "SaaS", "products": "CDN"} for i in range(3)
             ]
             batched = await kg.score_batch(new_records)
             individuals = [await kg.score_one(r) for r in new_records]
@@ -233,17 +271,14 @@ class TestVizEdgeCaseWarnings:
                 extract_entities=False,
                 compute_similarity=False,
             )
-            with caplog.at_level(
-                logging.WARNING, logger="pydantic_ai_cloudflare.visualization"
-            ):
+            with caplog.at_level(logging.WARNING, logger="pydantic_ai_cloudflare.visualization"):
                 spec = kg.to_cytoscape(
                     exclude_node_types=["entity", "industry", "products"],
                 )
             # Empty result should be loud, not silent.
             assert spec["nodes"] == []
             assert any(
-                "removed all" in m.lower() or "filters" in m.lower()
-                for m in caplog.messages
+                "removed all" in m.lower() or "filters" in m.lower() for m in caplog.messages
             ), caplog.messages
 
     @pytest.mark.asyncio

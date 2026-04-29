@@ -155,40 +155,102 @@ async def cf_structured(
     temperature: float = 0.1,
     retries: int = 3,
     simplify: bool = True,
+    # AI Gateway options
+    gateway_id: str | None = None,
+    cache_ttl: int | None = None,
+    skip_cache: bool = False,
+    cache_key: str | None = None,
+    # Prompt caching (session affinity)
+    session_id: str | None = None,
+    # Gateway request handling
+    gateway_timeout: int | None = None,
+    gateway_max_attempts: int | None = None,
+    gateway_retry_delay: int | None = None,
+    gateway_backoff: str | None = None,
+    # Metadata
+    gateway_metadata: dict[str, str | int | float | bool] | None = None,
 ) -> T:
     """Get structured output from Workers AI, handling all the quirks.
 
     This bypasses PydanticAI's structured output entirely and calls the
     Workers AI API directly with schema injection + json_object mode +
-    custom retry logic. This is the most reliable way to get complex
-    structured output from Workers AI models.
+    custom retry logic.
 
-    Works with all Workers AI models: Llama, Qwen, Kimi, Gemma, GLM,
-    DeepSeek, Nemotron.
+    Optionally routes through AI Gateway for logging, caching, analytics,
+    and prompt caching.
 
     Args:
         prompt: The user prompt.
         output_type: Pydantic model class for the output.
         model: Workers AI model ID.
-        system_prompt: Additional system prompt (prepended to schema instructions).
+        system_prompt: Additional system prompt.
         account_id: Cloudflare account ID.
         api_key: Cloudflare API token.
         max_tokens: Maximum output tokens.
-        temperature: Sampling temperature (lower = more deterministic).
+        temperature: Sampling temperature.
         retries: Max retry attempts on validation failure.
         simplify: Whether to simplify the schema to reduce tokens.
+        gateway_id: AI Gateway ID. Routes through gateway for logging,
+            caching, and analytics. e.g. "default" or "production".
+        cache_ttl: Cache responses for this many seconds via AI Gateway.
+            Only works when gateway_id is set.
+        skip_cache: Bypass the AI Gateway cache for this request.
+        cache_key: Custom cache key for precise cache control.
+        session_id: Session ID for prompt caching. Routes requests to
+            the same model instance to enable KV prefix cache hits.
+            Reduces latency for multi-turn conversations.
+        gateway_timeout: Gateway-level timeout in ms. Triggers fallback
+            if the model takes too long.
+        gateway_max_attempts: Max retry attempts at the gateway level.
+        gateway_retry_delay: Delay between gateway retries in ms.
+        gateway_backoff: Retry backoff strategy: "constant", "linear",
+            or "exponential".
+        gateway_metadata: Custom metadata attached to gateway logs.
+            e.g. {"user_id": "u-123", "session": "s-456"}.
 
     Returns:
         A validated instance of output_type.
-
-    Raises:
-        ValidationError: If the model can't produce valid output after retries.
-        RuntimeError: If the API returns an error.
     """
     acct = resolve_account_id(account_id)
     token = resolve_api_token(api_key)
     headers = build_headers(token)
-    url = f"https://api.cloudflare.com/client/v4/accounts/{acct}/ai/v1/chat/completions"
+
+    # Build URL — direct or through AI Gateway
+    if gateway_id:
+        url = (
+            f"https://gateway.ai.cloudflare.com/v1/"
+            f"{acct}/{gateway_id}/workers-ai/v1/chat/completions"
+        )
+        # Gateway auth header (separate from provider auth)
+        headers["cf-aig-authorization"] = f"Bearer {token}"
+    else:
+        url = f"https://api.cloudflare.com/client/v4/accounts/{acct}/ai/v1/chat/completions"
+
+    # AI Gateway caching headers
+    if cache_ttl is not None:
+        headers["cf-aig-cache-ttl"] = str(cache_ttl)
+    if skip_cache:
+        headers["cf-aig-skip-cache"] = "true"
+    if cache_key:
+        headers["cf-aig-cache-key"] = cache_key
+
+    # Prompt caching (session affinity)
+    if session_id:
+        headers["x-session-affinity"] = session_id
+
+    # Gateway request handling
+    if gateway_timeout is not None:
+        headers["cf-aig-request-timeout"] = str(gateway_timeout)
+    if gateway_max_attempts is not None:
+        headers["cf-aig-max-attempts"] = str(gateway_max_attempts)
+    if gateway_retry_delay is not None:
+        headers["cf-aig-retry-delay"] = str(gateway_retry_delay)
+    if gateway_backoff:
+        headers["cf-aig-backoff"] = gateway_backoff
+
+    # Custom metadata for gateway logs
+    if gateway_metadata:
+        headers["cf-aig-metadata"] = json_mod.dumps(gateway_metadata)
 
     # Build schema string
     raw_schema = output_type.model_json_schema()
