@@ -5,7 +5,7 @@
 [![PyPI](https://img.shields.io/pypi/v/pydantic-ai-cloudflare)](https://pypi.org/project/pydantic-ai-cloudflare/)
 [![Python](https://img.shields.io/pypi/pyversions/pydantic-ai-cloudflare)](https://pypi.org/project/pydantic-ai-cloudflare/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-232%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-239%20passing-brightgreen)](tests/)
 
 ```bash
 pip install pydantic-ai-cloudflare
