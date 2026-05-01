@@ -1,0 +1,32 @@
+name: pip-audit
+
+on:
+  pull_request: {}
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+  schedule:
+    - cron: '0 0 8-14 * 1'  # second Monday of month, midnight UTC
+
+concurrency:
+  group: pip-audit-${{ github.event_name }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: pip-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pip-audit==2.7.3
+      - run: pip install .
+      - run: pip-audit --disable-pip
+        continue-on-error: true  # informational, don't block PRs

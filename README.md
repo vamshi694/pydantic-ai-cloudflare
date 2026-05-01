@@ -6,6 +6,8 @@
 [![Python](https://img.shields.io/pypi/pyversions/pydantic-ai-cloudflare)](https://pypi.org/project/pydantic-ai-cloudflare/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-239%20passing-brightgreen)](tests/)
+[![Semgrep](https://github.com/vamshi694/pydantic-ai-cloudflare/actions/workflows/semgrep.yml/badge.svg)](https://github.com/vamshi694/pydantic-ai-cloudflare/actions/workflows/semgrep.yml)
+[![pip-audit](https://github.com/vamshi694/pydantic-ai-cloudflare/actions/workflows/pip-audit.yml/badge.svg)](https://github.com/vamshi694/pydantic-ai-cloudflare/actions/workflows/pip-audit.yml)
 
 ```bash
 pip install pydantic-ai-cloudflare
