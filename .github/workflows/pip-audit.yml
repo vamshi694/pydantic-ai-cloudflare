@@ -28,5 +28,5 @@ jobs:
           python-version: '3.12'
       - run: pip install pip-audit==2.7.3
       - run: pip install .
-      - run: pip-audit --disable-pip
+      - run: pip-audit
         continue-on-error: true  # informational, don't block PRs
